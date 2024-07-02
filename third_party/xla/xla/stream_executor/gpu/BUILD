@@ -178,7 +178,6 @@ gpu_only_cc_library(
     name = "gpu_event_header",
     hdrs = ["gpu_event.h"],
     deps = [
-        ":gpu_stream_header",
         ":gpu_types_header",
         "//xla/stream_executor:event",
         "@com_google_absl//absl/status",
@@ -192,7 +191,6 @@ gpu_only_cc_library(
     deps = [
         ":gpu_driver_header",
         ":gpu_executor_header",
-        ":gpu_stream",
         ":gpu_types_header",
         "//xla/stream_executor:event",
         "@com_google_absl//absl/base",
@@ -305,6 +303,7 @@ gpu_only_cc_library(
     deps = [
         ":gpu_executor_header",
         ":gpu_types_header",
+        "//xla/stream_executor:device_memory",
         "//xla/stream_executor:platform",
         "//xla/stream_executor:stream",
         "//xla/stream_executor:stream_common",
@@ -321,6 +320,7 @@ gpu_only_cc_library(
         ":gpu_event_header",
         ":gpu_executor_header",
         ":gpu_types_header",
+        "//xla/stream_executor:device_memory",
         "//xla/stream_executor:event",
         "//xla/stream_executor:platform",
         "//xla/stream_executor:stream",
@@ -489,7 +489,7 @@ gpu_only_cc_library(
     ]),
 )
 
-gpu_kernel_library(
+cc_library(
     name = "redzone_allocator_kernel_cuda",
     srcs = [
         "redzone_allocator_kernel.h",
@@ -672,7 +672,6 @@ cc_library(
     deps = [
         "//xla:shape_util",
         "//xla:status_macros",
-        "//xla:statusor",
         "//xla:types",
         "//xla:util",
         "//xla:xla_data_proto_cc",

@@ -15,7 +15,7 @@ limitations under the License.
 
 #include "xla/service/cpu/runtime/all_reduce_thunk.h"
 
-#include <cstddef>
+#include <cstdint>
 #include <cstring>
 #include <memory>
 #include <utility>
@@ -26,12 +26,17 @@ limitations under the License.
 #include "absl/status/statusor.h"
 #include "absl/strings/str_format.h"
 #include "absl/types/span.h"
-#include "xla/runtime/buffer_use.h"
+#include "xla/primitive_util.h"
 #include "xla/service/buffer_assignment.h"
+#include "xla/service/collective_ops_utils.h"
+#include "xla/service/cpu/collectives_interface.h"
+#include "xla/service/cpu/runtime/collective_thunk.h"
 #include "xla/service/cpu/runtime/thunk.h"
 #include "xla/shape.h"
-#include "xla/stream_executor/device_memory.h"
+#include "xla/shape_util.h"
 #include "xla/tsl/concurrency/async_value_ref.h"
+#include "xla/util.h"
+#include "tsl/platform/errors.h"
 #include "tsl/platform/logging.h"
 #include "tsl/platform/statusor.h"
 #include "tsl/profiler/lib/traceme.h"
@@ -39,69 +44,75 @@ limitations under the License.
 namespace xla::cpu {
 
 absl::StatusOr<std::unique_ptr<AllReduceThunk>> AllReduceThunk::Create(
-    Info info, absl::Span<const BufferAllocation::Slice> source_buffers,
-    absl::Span<const Shape> source_shapes,
-    BufferAllocation::Slice destination_buffer,
-    const Shape& destination_shape) {
-  return absl::WrapUnique(new AllReduceThunk(std::move(info), source_buffers,
-                                             source_shapes, destination_buffer,
-                                             destination_shape));
+    Info info, ReductionKind reduction_kind, OpParams op_params,
+    OpBuffers op_buffers, OpResources op_resources, bool single_replica) {
+  auto datatype = op_buffers.source_shapes[0].element_type();
+  if (!IsDataTypeSupportedByCollectiveReduce(datatype)) {
+    return Unimplemented("AllReduce for datatype '%s' is not supported",
+                         primitive_util::LowercasePrimitiveTypeName(datatype));
+  }
+
+  return absl::WrapUnique(new AllReduceThunk(
+      std::move(info), reduction_kind, std::move(op_params),
+      std::move(op_buffers), std::move(op_resources), single_replica));
 }
 
-AllReduceThunk::AllReduceThunk(
-    Info info, absl::Span<const BufferAllocation::Slice> source_buffers,
-    absl::Span<const Shape> source_shapes,
-    BufferAllocation::Slice destination_buffer, const Shape& destination_shape)
-    : Thunk(Kind::kAllReduce, info),
-      source_buffers_(source_buffers.begin(), source_buffers.end()),
-      source_shapes_(source_shapes.begin(), source_shapes.end()),
-      destination_buffer_(destination_buffer),
-      destination_shape_(destination_shape) {}
+AllReduceThunk::AllReduceThunk(Info info, ReductionKind reduction_kind,
+                               OpParams op_params, OpBuffers op_buffers,
+                               OpResources op_resources, bool single_replica)
+    : CollectiveThunk(Kind::kAllReduce, std::move(info), std::move(op_params),
+                      std::move(op_buffers), std::move(op_resources)),
+      reduction_kind_(reduction_kind),
+      single_replica_(single_replica) {}
 
 tsl::AsyncValueRef<AllReduceThunk::ExecuteEvent> AllReduceThunk::Execute(
     const ExecuteParams& params) {
   tsl::profiler::TraceMe trace([&] { return TraceMeEncode(); });
 
-  size_t num_srcs = source_buffers_.size();
-  VLOG(3) << absl::StreamFormat("AllReduce: #source_buffers=%d", num_srcs);
-
-  absl::InlinedVector<se::DeviceMemoryBase, 4> source_data(num_srcs);
-  for (int i = 0; i < num_srcs; ++i) {
-    TF_ASSIGN_OR_RETURN(
-        source_data[i],
-        params.buffer_allocations->GetDeviceAddress(source_buffers_[i]));
-    VLOG(3) << absl::StreamFormat(
-        "  src: %s in slice %s (%p)", source_shapes_[i].ToString(true),
-        source_buffers_[i].ToString(), source_data[i].opaque());
-  }
-
-  TF_ASSIGN_OR_RETURN(
-      se::DeviceMemoryBase destination_data,
-      params.buffer_allocations->GetDeviceAddress(destination_buffer_));
+  TF_ASSIGN_OR_RETURN(OpDeviceMemory data, GetOpDeviceMemory(params));
 
   VLOG(3) << absl::StreamFormat(
-      "  dst: %s in slice %s (%p)", destination_shape_.ToString(true),
-      destination_buffer_.ToString(), destination_data.opaque());
+      "AllReduce: #source_buffers=%d, #destination_buffers=%d, "
+      "reduction_kind=%s, single_replica=%v",
+      data.source.size(), data.destination.size(),
+      ReductionKindToString(reduction_kind_), single_replica_);
+
+  for (int i = 0; i < data.source.size(); ++i) {
+    VLOG(3) << absl::StreamFormat(
+        "  src: %s in slice %s (%p)", source_shape(i).ToString(true),
+        source_buffer(i).ToString(), data.source[i].opaque());
+  }
+
+  for (int i = 0; i < data.destination.size(); ++i) {
+    VLOG(3) << absl::StreamFormat(
+        "  dst: %s in slice %s (%p)", destination_shape(i).ToString(true),
+        destination_buffer(i).ToString(), data.destination[i].opaque());
+  }
 
   // Handle single-replica case by copying the source to the destination.
-  if (num_srcs == 1) {
-    DCHECK_EQ(source_data.size(), destination_data.size());
-    std::memcpy(destination_data.opaque(), source_data[0].opaque(),
-                destination_data.size());
+  if (single_replica_) {
+    DCHECK_EQ(data.source.size(), data.destination.size());
+    for (int i = 0; i < data.source.size(); ++i) {
+      std::memcpy(data.destination[i].opaque(), data.source[i].opaque(),
+                  data.destination[i].size());
+    }
     return OkExecuteEvent();
   }
 
-  return absl::UnimplementedError("AllReduceThunk::Execute not implemented");
-}
+  return ExecuteWithCommunicator(
+      params.collective_params,
+      [&](const RendezvousKey& key, CollectivesCommunicator& comm) {
+        for (int32_t i = 0; i < data.source.size(); ++i) {
+          const Shape& shape = destination_shape(i);
+          TF_RETURN_IF_ERROR(comm.AllReduce(
+              key, reduction_kind_, shape.element_type(),
+              ShapeUtil::ElementsIn(shape), data.source[i].opaque(),
+              data.destination[i].opaque(), DefaultCollectiveTimeout()));
+        }
+        return absl::OkStatus();
+      });
 
-Thunk::BufferUses AllReduceThunk::buffer_uses() const {
-  BufferUses uses;
-  uses.reserve(source_buffers_.size() + 1);
-  for (auto& source_buffer : source_buffers_) {
-    uses.push_back(BufferUse::Read(source_buffer));
-  }
-  uses.push_back(BufferUse::Write(destination_buffer_));
-  return uses;
+  return OkExecuteEvent();
 }
 
 }  // namespace xla::cpu

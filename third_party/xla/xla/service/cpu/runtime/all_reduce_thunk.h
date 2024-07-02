@@ -17,41 +17,30 @@ limitations under the License.
 #define XLA_SERVICE_CPU_RUNTIME_ALL_REDUCE_THUNK_H_
 
 #include <memory>
-#include <vector>
 
 #include "absl/status/statusor.h"
-#include "absl/types/span.h"
-#include "xla/service/buffer_assignment.h"
-#include "xla/service/cpu/runtime/thunk.h"
-#include "xla/shape.h"
+#include "xla/service/collective_ops_utils.h"
+#include "xla/service/cpu/runtime/collective_thunk.h"
 #include "xla/tsl/concurrency/async_value_ref.h"
+#include "xla/xla_data.pb.h"
 
 namespace xla::cpu {
 
-class AllReduceThunk final : public Thunk {
+class AllReduceThunk final : public CollectiveThunk {
  public:
   static absl::StatusOr<std::unique_ptr<AllReduceThunk>> Create(
-      Info info, absl::Span<const BufferAllocation::Slice> source_buffers,
-      absl::Span<const Shape> source_shapes,
-      BufferAllocation::Slice destination_buffer,
-      const Shape& destination_shape);
+      Info info, ReductionKind reduction_kind, OpParams op_params,
+      OpBuffers op_buffers, OpResources op_resources, bool single_replica);
 
   tsl::AsyncValueRef<ExecuteEvent> Execute(const ExecuteParams& params) final;
 
-  BufferUses buffer_uses() const final;
-
  private:
-  AllReduceThunk(Info info,
-                 absl::Span<const BufferAllocation::Slice> source_buffers,
-                 absl::Span<const Shape> source_shapes,
-                 BufferAllocation::Slice destination_buffer,
-                 const Shape& destination_shape);
+  AllReduceThunk(Info info, ReductionKind reduction_kind, OpParams op_params,
+                 OpBuffers op_buffers, OpResources op_resources,
+                 bool single_replica);
 
-  std::vector<BufferAllocation::Slice> source_buffers_;
-  std::vector<Shape> source_shapes_;
-
-  BufferAllocation::Slice destination_buffer_;
-  Shape destination_shape_;
+  ReductionKind reduction_kind_;
+  bool single_replica_;
 };
 
 }  // namespace xla::cpu
