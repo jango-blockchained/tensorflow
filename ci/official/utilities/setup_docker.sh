@@ -54,5 +54,13 @@ if ! docker container inspect tf >/dev/null 2>&1 ; then
       --env-file "$env_file" \
       "$TFCI_DOCKER_IMAGE" \
     bash
+
+  if [[ `uname -s | grep -P '^MSYS_NT'` ]]; then
+    # Allow requests from the container.
+    # Additional setup is contained in ci/official/envs/rbe.
+    CONTAINER_IP_ADDR=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' tf)
+    netsh advfirewall firewall add rule name="Allow Metadata Proxy" dir=in action=allow protocol=TCP localport=80 remoteip="$CONTAINER_IP_ADDR"
+  fi
+
 fi
 tfrun() { docker exec tf "$@"; }
