@@ -16,7 +16,7 @@ limitations under the License.
 #ifndef TENSORFLOW_CORE_PROFILER_UTILS_XPLANE_SCHEMA_H_
 #define TENSORFLOW_CORE_PROFILER_UTILS_XPLANE_SCHEMA_H_
 
-#include "tsl/profiler/utils/xplane_schema.h"
+#include "xla/tsl/profiler/utils/xplane_schema.h"
 
 namespace tensorflow {
 namespace profiler {
@@ -54,6 +54,7 @@ using tsl::profiler::kMetadataPlaneName;             // NOLINT
 using tsl::profiler::kPythonTracerPlaneName;         // NOLINT
 using tsl::profiler::kRoctracerApiPlaneName;         // NOLINT
 using tsl::profiler::kSourceLineName;                // NOLINT
+using tsl::profiler::kSparseCorePlaneRegex;          // NOLINT
 using tsl::profiler::kStepLineName;                  // NOLINT
 using tsl::profiler::kTensorFlowNameScopeLineName;   // NOLINT
 using tsl::profiler::kTensorFlowOpLineName;          // NOLINT

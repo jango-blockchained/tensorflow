@@ -17,6 +17,7 @@ limitations under the License.
 
 #include <algorithm>
 #include <cstdint>
+#include <utility>
 
 #include "absl/algorithm/container.h"
 #include "absl/strings/string_view.h"
@@ -269,22 +270,31 @@ HloInstruction* GetUniqueGteInstruction(const HloInstruction* operand,
   return gte;
 }
 
-bool IsBeforeInComputation(const HloComputation* computation,
-                           absl::string_view inst1, absl::string_view inst2) {
-  int index1 = -1;
-  int index2 = -1;
-  int current_index = 0;
-  for (auto instruction : computation->instructions()) {
-    if (instruction->name() == inst1) {
-      index1 = current_index;
-    }
-    if (instruction->name() == inst2) {
-      index2 = current_index;
-    }
-    current_index++;
+HloComputation* FindComputation(HloModule* module, absl::string_view name) {
+  auto computations = module->computations();
+  auto it = absl::c_find_if(
+      computations, [&](HloComputation* c) { return c->name() == name; });
+  if (it == computations.end()) {
+    return nullptr;
   }
-  current_index++;
-  return index1 < index2;
+  return *it;
 }
+
+HloInstruction* FindInstruction(const HloComputation* computation,
+                                absl::string_view name) {
+  for (HloInstruction* instruction : computation->instructions()) {
+    if (instruction->name() == name) return instruction;
+  }
+  return nullptr;
+}
+
+HloInstruction* FindInstruction(const HloComputation* computation,
+                                HloOpcode opcode) {
+  for (auto* instruction : computation->instructions()) {
+    if (instruction->opcode() == opcode) return instruction;
+  }
+  return nullptr;
+}
+
 }  // namespace hlo_query
 }  // namespace xla

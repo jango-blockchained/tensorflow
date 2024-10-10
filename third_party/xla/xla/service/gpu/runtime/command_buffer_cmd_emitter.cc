@@ -29,13 +29,13 @@ limitations under the License.
 #include "xla/service/gpu/runtime/copy_thunk.h"
 #include "xla/service/gpu/runtime/cudnn_thunk.h"
 #include "xla/service/gpu/runtime/custom_call_thunk.h"
-#include "xla/service/gpu/runtime/fused_mha_thunk.h"
 #include "xla/service/gpu/runtime/gemm_thunk.h"
 #include "xla/service/gpu/runtime/gpublas_lt_matmul_thunk.h"
 #include "xla/service/gpu/runtime/kernel_thunk.h"
 #include "xla/service/gpu/runtime/memset_thunk.h"
 #include "xla/service/gpu/runtime/nccl_all_gather_thunk.h"
 #include "xla/service/gpu/runtime/nccl_all_reduce_thunk.h"
+#include "xla/service/gpu/runtime/nccl_all_to_all_thunk.h"
 #include "xla/service/gpu/runtime/nccl_collective_thunk.h"
 #include "xla/service/gpu/runtime/replica_id_thunk.h"
 #include "xla/service/gpu/runtime/sequential_thunk.h"
@@ -143,27 +143,6 @@ static absl::StatusOr<Command> Convert(const CublasLtMatmulThunk& thunk) {
       thunk.workspace().value());
 }
 
-static absl::StatusOr<Command> Convert(const FusedMHAThunk& thunk) {
-  return std::make_unique<FusedMHACmd>(
-      thunk.execution_stream_id(), thunk.config(), thunk.lhs_bmm1_buffer(),
-      thunk.rhs_bmm1_buffer(), thunk.rhs_bmm2_buffer(), thunk.output_buffer(),
-      thunk.scratch_buffer(), BufferAllocation::Slice(), thunk.bias_buffer(),
-      thunk.activation_buffer(), thunk.seqlen_q_buffer(),
-      thunk.seqlen_k_buffer());
-}
-
-static absl::StatusOr<Command> Convert(const FusedMHABackwardThunk& thunk) {
-  return std::make_unique<FusedMHABackwardCmd>(
-      thunk.execution_stream_id(), thunk.config(),
-      thunk.bmm1_grad_gemm1_rhs_buffer(), thunk.bmm1_grad_gemm2_rhs_buffer(),
-      thunk.bmm2_grad_gemm1_lhs_buffer(), thunk.bmm2_grad_gemm2_rhs_buffer(),
-      thunk.d_output_buffer(), thunk.scratch_buffer(),
-      thunk.d_bmm1_lhs_buffer(), thunk.d_bmm1_rhs_buffer(),
-      thunk.d_bmm2_rhs_buffer(), thunk.d_s_buffer(), thunk.d_bias_buffer(),
-      thunk.fwd_output_buffer(), thunk.bias_buffer(), thunk.seqlen_q_buffer(),
-      thunk.seqlen_k_buffer());
-}
-
 static absl::StatusOr<Command> Convert(
     const ConditionalThunk& thunk,
     CommandBufferCmdSequence::SynchronizationMode synchronization_mode) {
@@ -192,6 +171,13 @@ static absl::StatusOr<Command> Convert(
   return std::make_unique<ReduceScatterCmd>(
       thunk.nccl_execution_stream_id(), thunk.execution_stream_id(),
       thunk.nccl_api(), thunk.config(), thunk.reduction_kind(),
+      thunk.buffers());
+}
+
+static absl::StatusOr<Command> Convert(const NcclAllToAllStartThunk& thunk) {
+  return std::make_unique<AllToAllCmd>(
+      thunk.nccl_execution_stream_id(), thunk.execution_stream_id(),
+      thunk.nccl_api(), thunk.config(), thunk.has_split_dimension(),
       thunk.buffers());
 }
 
@@ -276,10 +262,6 @@ static absl::Status AppendCommands(
       return append(Convert<CustomCallThunk>(thunk));
     case Thunk::Kind::kCustomKernel:
       return append(Convert<CustomKernelThunk>(thunk));
-    case Thunk::Kind::kFusedMHA:
-      return append(Convert<FusedMHAThunk>(thunk));
-    case Thunk::Kind::kFusedMHABackward:
-      return append(Convert<FusedMHABackwardThunk>(thunk));
     case Thunk::Kind::kKernel:
       return append(Convert<KernelThunk>(thunk));
     case Thunk::Kind::kGemm:
@@ -296,6 +278,8 @@ static absl::Status AppendCommands(
       return append(Convert<NcclAllReduceStartThunk>(thunk));
     case Thunk::Kind::kNcclReduceScatterStart:
       return append(Convert<NcclReduceScatterStartThunk>(thunk));
+    case Thunk::Kind::kNcclAllToAllStart:
+      return append(Convert<NcclAllToAllStartThunk>(thunk));
     case Thunk::Kind::kPartitionId:
       return append(Convert<PartitionIdThunk>(thunk));
     case Thunk::Kind::kReplicaId:
@@ -315,10 +299,18 @@ static absl::Status AppendCommands(
     case Thunk::Kind::kNcclAllGatherDone:
     case Thunk::Kind::kNcclAllReduceDone:
     case Thunk::Kind::kNcclReduceScatterDone:
+    case Thunk::Kind::kNcclAllToAllDone:
       return append(Convert<NcclCollectiveDoneThunk>(thunk));
 
     case Thunk::Kind::kWaitForStreams:
       return append(Convert<WaitForStreamsThunk>(thunk));
+
+    case Thunk::Kind::kCommandBuffer:
+      return Internal(
+          "Error trying to emit command for a CommandBufferThunk. Input HLO "
+          "must already contain command buffers and XLA should not run command "
+          "buffer scheduling pass the second time. It it happens in the test, "
+          "try explicitly disabling command buffers in tested HLO module.");
 
     default:
       return Internal("Unsupported thunk kind: %s",

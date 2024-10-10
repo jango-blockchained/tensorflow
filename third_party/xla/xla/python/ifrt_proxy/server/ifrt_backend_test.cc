@@ -17,6 +17,7 @@
 #include <sys/types.h>
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -46,6 +47,7 @@
 #include "xla/python/ifrt/attribute_map.h"
 #include "xla/python/ifrt/compiler.h"
 #include "xla/python/ifrt/device.h"
+#include "xla/python/ifrt/device_list.h"
 #include "xla/python/ifrt/dtype.h"
 #include "xla/python/ifrt/executable.h"
 #include "xla/python/ifrt/future.h"
@@ -68,6 +70,8 @@
 #include "xla/test.h"
 #include "xla/tsl/concurrency/ref_count.h"
 #include "xla/tsl/lib/core/status_test_util.h"
+#include "xla/tsl/protobuf/error_codes.pb.h"
+#include "xla/tsl/protobuf/status.pb.h"
 #include "xla/xla_data.pb.h"
 #include "tsl/platform/env.h"
 #include "tsl/platform/errors.h"
@@ -76,8 +80,6 @@
 #include "tsl/platform/status_to_from_proto.h"
 #include "tsl/platform/statusor.h"
 #include "tsl/platform/test.h"
-#include "tsl/protobuf/error_codes.pb.h"
-#include "tsl/protobuf/status.pb.h"
 
 namespace xla {
 namespace ifrt {
@@ -248,6 +250,8 @@ class IfrtBackendHandlerTest : public IfrtBackendTest {
     }
 
     ON_CALL(*mock_client, devices()).WillByDefault(Return(raw_device_ptrs));
+    ON_CALL(*mock_client, GetAllDevices())
+        .WillByDefault(Return(raw_device_ptrs));
     ON_CALL(*mock_client, LookupDevice(_))
         .WillByDefault(
             Invoke([this](DeviceId id) -> absl::StatusOr<xla::ifrt::Device*> {
@@ -343,6 +347,9 @@ class IfrtBackendHandlerTest : public IfrtBackendTest {
   }
 
   absl::Status CheckFuture(uint64_t handle) {
+    if (handle == 0) {
+      return absl::InternalError("Test error, future handle is 0");
+    }
     auto request = NewIfrtRequest(NewOpId());
     request->mutable_check_future_request()->set_future_handle(handle);
     TF_ASSIGN_OR_RETURN(std::shared_ptr<IfrtResponse> response,
@@ -429,7 +436,7 @@ TEST_P(IfrtBackendHandlerTest, Init) {
                         platform_id: 42
                         process_index: 1
                         runtime_type: "ifrt-service"
-                        devices {
+                        all_devices {
                           id: 0
                           device_kind: "mock"
                           default_memory_id: 0
@@ -439,7 +446,7 @@ TEST_P(IfrtBackendHandlerTest, Init) {
                             value { string_value: "device0" }
                           }
                         }
-                        devices {
+                        all_devices {
                           id: 1
                           device_kind: "mock"
                           default_memory_id: 1
@@ -447,6 +454,53 @@ TEST_P(IfrtBackendHandlerTest, Init) {
                           deprecated_attributes {
                             key: "name"
                             value { string_value: "device1" }
+                          }
+                        }
+                        memories {
+                          id: 0
+                          memory_space_kind: "mock"
+                          device_ids: [ 0 ]
+                        }
+                        memories {
+                          id: 1
+                          memory_space_kind: "mock"
+                          device_ids: [ 1 ]
+                        }
+                      }
+                    )pb"))))));
+  } else if (Version().protocol_version() < 7) {
+    EXPECT_THAT(CallBackend(std::move(request)),
+                IsOkAndHolds(Pointee(
+                    Partially(IgnoringRepeatedFieldOrdering(EquivToProto(R"pb(
+                      init_response {
+                        session_id: 12345
+                        platform_name: "ifrt_backend"
+                        platform_version: "n/a"
+                        platform_id: 42
+                        process_index: 1
+                        runtime_type: "ifrt-service"
+                        all_devices {
+                          id: 0
+                          device_kind: "mock"
+                          default_memory_id: 0
+                          memory_ids: [ 0 ]
+                          attributes {
+                            attributes {
+                              key: "name"
+                              value { string_value: "device0" }
+                            }
+                          }
+                        }
+                        all_devices {
+                          id: 1
+                          device_kind: "mock"
+                          default_memory_id: 1
+                          memory_ids: [ 1 ]
+                          attributes {
+                            attributes {
+                              key: "name"
+                              value { string_value: "device1" }
+                            }
                           }
                         }
                         memories {
@@ -472,7 +526,7 @@ TEST_P(IfrtBackendHandlerTest, Init) {
                         platform_id: 42
                         process_index: 1
                         runtime_type: "ifrt-service"
-                        devices {
+                        all_devices {
                           id: 0
                           device_kind: "mock"
                           default_memory_id: 0
@@ -484,7 +538,7 @@ TEST_P(IfrtBackendHandlerTest, Init) {
                             }
                           }
                         }
-                        devices {
+                        all_devices {
                           id: 1
                           device_kind: "mock"
                           default_memory_id: 1
@@ -496,6 +550,7 @@ TEST_P(IfrtBackendHandlerTest, Init) {
                             }
                           }
                         }
+                        primary_device_ids: [ 0, 1 ]
                         memories {
                           id: 0
                           memory_space_kind: "mock"
@@ -706,6 +761,9 @@ TEST_P(IfrtBackendHandlerTest,
       StatusIs(absl::StatusCode::kUnknown, StrEq(kDisassembleErrorMessage)));
 }
 
+// Matcher for matching the `device_list` argument of `Client::CopyArrays()`.
+MATCHER_P(EqualsDeviceList, device_list, "") { return *arg == *device_list; }
+
 TEST_P(IfrtBackendHandlerTest, CopyArrays) {
   std::vector<tsl::RCReference<xla::ifrt::Array>> src_arrays;
   src_arrays.push_back(tsl::MakeRef<xla::ifrt::MockArray>());
@@ -713,16 +771,16 @@ TEST_P(IfrtBackendHandlerTest, CopyArrays) {
   std::vector<tsl::RCReference<xla::ifrt::Array>> copied_arrays;
   copied_arrays.push_back(tsl::MakeRef<xla::ifrt::MockArray>());
 
-  DeviceList::Devices ds;
+  BasicDeviceList::Devices ds;
   TF_ASSERT_OK_AND_ASSIGN(ds.emplace_back(),
                           mock_client_->LookupDevice(DeviceId(1)));
-  DeviceList devices(std::move(ds));
+  tsl::RCReference<DeviceList> devices = BasicDeviceList::Create(std::move(ds));
   MemoryKind memory_kind("device");
 
-  EXPECT_CALL(
-      *mock_client_,
-      CopyArrays(ElementsAreArray(src_arrays), Optional(devices),
-                 Optional(memory_kind), ArrayCopySemantics::kAlwaysCopy))
+  EXPECT_CALL(*mock_client_, CopyArrays(ElementsAreArray(src_arrays),
+                                        Optional(EqualsDeviceList(devices)),
+                                        Optional(memory_kind),
+                                        ArrayCopySemantics::kAlwaysCopy))
       .WillOnce(Return(
           std::vector<tsl::RCReference<xla::ifrt::Array>>(copied_arrays)));
 
@@ -732,7 +790,7 @@ TEST_P(IfrtBackendHandlerTest, CopyArrays) {
     TF_ASSERT_OK_AND_ASSIGN(auto src_array_handle, MakeTestArray(src_array));
     copy_arrays_request->add_array_handles(src_array_handle);
   }
-  for (const auto& device : devices.devices()) {
+  for (const auto& device : devices->devices()) {
     copy_arrays_request->add_device_ids(device->Id().value());
   }
   copy_arrays_request->set_memory_kind(std::string(*memory_kind.memory_kind()));
@@ -908,26 +966,46 @@ TEST_P(IfrtBackendHandlerTest,
 }
 
 TEST_P(IfrtBackendHandlerTest, DeleteArraySuccess) {
-  tsl::RCReference<xla::ifrt::MockArray> mock_array =
-      tsl::MakeRef<xla::ifrt::MockArray>();
-  EXPECT_CALL(*mock_array, Delete())
+  auto mock_array1 = tsl::MakeRef<xla::ifrt::MockArray>();
+  EXPECT_CALL(*mock_array1, Delete())
       .WillOnce(Return(Future<>(absl::OkStatus())));
-  TF_ASSERT_OK_AND_ASSIGN(auto array_handle,
-                          MakeTestArray(std::move(mock_array)));
+  auto mock_array2 = tsl::MakeRef<xla::ifrt::MockArray>();
+  EXPECT_CALL(*mock_array2, Delete())
+      .WillOnce(Return(Future<>(absl::OkStatus())));
+
+  TF_ASSERT_OK_AND_ASSIGN(auto array_handle1,
+                          MakeTestArray(std::move(mock_array1)));
+  TF_ASSERT_OK_AND_ASSIGN(auto array_handle2,
+                          MakeTestArray(std::move(mock_array2)));
 
   uint64_t op_id = NewOpId();
   auto ifrt_request = NewIfrtRequest(op_id);
-  ifrt_request->mutable_delete_array_request()->set_array_handle(array_handle);
+  ifrt_request->mutable_delete_array_request()->add_array_handle(array_handle1);
+  ifrt_request->mutable_delete_array_request()->add_array_handle(array_handle2);
   TF_ASSERT_OK_AND_ASSIGN(auto resp, CallBackend(std::move(ifrt_request)));
   EXPECT_THAT(tsl::StatusFromProto(resp->response_metadata().status()), IsOk());
-  EXPECT_NE(resp->delete_array_response().deletion_future_handle(), 0);
+  TF_EXPECT_OK(
+      CheckFuture(resp->delete_array_response().deletion_future_handle()));
 }
 
-TEST_P(IfrtBackendHandlerTest, DeleteArrayFailsWithNonExistentArrayHandle) {
+TEST_P(IfrtBackendHandlerTest,
+       DeleteArrayReturnsFutureWithNonExistentArrayHandle) {
+  // Create one existing array.
+  auto mock_array1 = tsl::MakeRef<xla::ifrt::MockArray>();
+  EXPECT_CALL(*mock_array1, Delete())
+      .WillOnce(Return(Future<>(absl::OkStatus())));
+  TF_ASSERT_OK_AND_ASSIGN(auto real_handle,
+                          MakeTestArray(std::move(mock_array1)));
+
+  constexpr int kBadHandle = 400;
   auto ifrt_request = NewIfrtRequest(NewOpId());
-  ifrt_request->mutable_delete_array_request()->set_array_handle(0);
-  EXPECT_THAT(CallBackend(std::move(ifrt_request)),
-              StatusIs(absl::StatusCode::kNotFound));
+  ifrt_request->mutable_delete_array_request()->add_array_handle(real_handle);
+  ifrt_request->mutable_delete_array_request()->add_array_handle(kBadHandle);
+  TF_ASSERT_OK_AND_ASSIGN(auto resp, CallBackend(std::move(ifrt_request)));
+
+  EXPECT_THAT(
+      CheckFuture(resp->delete_array_response().deletion_future_handle()),
+      StatusIs(absl::StatusCode::kNotFound));
 }
 
 TEST_P(IfrtBackendHandlerTest,
@@ -963,14 +1041,20 @@ TEST_P(IfrtBackendHandlerTest, IsDeleteFailsForNonExistentArrays) {
 }
 
 TEST_P(IfrtBackendHandlerTest, DestructArrayTest) {
-  tsl::RCReference<xla::ifrt::MockArray> mock_array =
+  tsl::RCReference<xla::ifrt::MockArray> mock_array1 =
       tsl::MakeRef<xla::ifrt::MockArray>();
-  TF_ASSERT_OK_AND_ASSIGN(auto array_handle,
-                          MakeTestArray(std::move(mock_array)));
+  TF_ASSERT_OK_AND_ASSIGN(auto array_handle1,
+                          MakeTestArray(std::move(mock_array1)));
+  tsl::RCReference<xla::ifrt::MockArray> mock_array2 =
+      tsl::MakeRef<xla::ifrt::MockArray>();
+  TF_ASSERT_OK_AND_ASSIGN(auto array_handle2,
+                          MakeTestArray(std::move(mock_array2)));
 
   auto ifrt_request = NewIfrtRequest(NewOpId());
-  ifrt_request->mutable_destruct_array_request()->set_array_handle(
-      array_handle);
+  ifrt_request->mutable_destruct_array_request()->add_array_handle(
+      array_handle1);
+  ifrt_request->mutable_destruct_array_request()->add_array_handle(
+      array_handle2);
   TF_ASSERT_OK_AND_ASSIGN(auto ifrt_resp, CallBackend(std::move(ifrt_request)));
   EXPECT_TRUE(ifrt_resp->has_destruct_array_response());
 
@@ -978,8 +1062,8 @@ TEST_P(IfrtBackendHandlerTest, DestructArrayTest) {
   // handle no longer exists on the server, (2) DestructArray fails for
   // non-existent arrays and (3) DestructArray is not idempotent.
   ifrt_request = NewIfrtRequest(NewOpId());
-  ifrt_request->mutable_destruct_array_request()->set_array_handle(
-      array_handle);
+  ifrt_request->mutable_destruct_array_request()->add_array_handle(
+      array_handle1);
   EXPECT_THAT(CallBackend(std::move(ifrt_request)),
               StatusIs(absl::StatusCode::kNotFound));
 }
@@ -1058,7 +1142,7 @@ TEST_P(IfrtBackendHandlerTest, LoadedExecutableMetadata) {
     EXPECT_CALL(*executable, GetOutputShardings())
         .WillOnce(Return(std::vector<OpSharding>{op_sharding1}));
 
-    std::vector<std::unique_ptr<Layout>> parameter_layouts;
+    std::vector<std::unique_ptr<xla::PjRtLayout>> parameter_layouts;
     parameter_layouts.push_back(std::make_unique<xla::PjRtXlaLayout>(
         xla::LayoutUtil::MakeDescendingLayout(/*rank=*/1)));
     parameter_layouts.push_back(std::make_unique<xla::PjRtXlaLayout>(
@@ -1066,7 +1150,7 @@ TEST_P(IfrtBackendHandlerTest, LoadedExecutableMetadata) {
     EXPECT_CALL(*executable, GetParameterLayouts())
         .WillOnce(Return(std::move(parameter_layouts)));
 
-    std::vector<std::unique_ptr<Layout>> output_layouts;
+    std::vector<std::unique_ptr<xla::PjRtLayout>> output_layouts;
     output_layouts.push_back(std::make_unique<xla::PjRtXlaLayout>(
         xla::LayoutUtil::MakeDescendingLayout(/*rank=*/2)));
     EXPECT_CALL(*executable, GetOutputLayouts())
@@ -1175,7 +1259,7 @@ TEST_P(IfrtBackendHandlerTest, LoadedExecutableExecute) {
       .WillOnce(
           Invoke([&](absl::Span<tsl::RCReference<Array>> args,
                      const xla::ifrt::LoadedExecutable::ExecuteOptions& options,
-                     std::optional<DeviceList> devices)
+                     std::optional<tsl::RCReference<DeviceList>> devices)
                      -> absl::StatusOr<LoadedExecutable::ExecuteResult> {
             return LoadedExecutable::ExecuteResult{
                 .status = Future<>(absl::InternalError("injected error")),
@@ -1191,9 +1275,10 @@ TEST_P(IfrtBackendHandlerTest, LoadedExecutableExecute) {
     execute_request->add_args_handles(arg_handle);
   }
   execute_request->set_loaded_executable_handle(handle);
-  TF_ASSERT_OK_AND_ASSIGN(
-      *execute_request->mutable_execute_options(),
-      xla::ifrt::LoadedExecutable::ExecuteOptions().ToProto());
+  xla::ifrt::LoadedExecutable::ExecuteOptions execute_options;
+  execute_options.fill_status = true;
+  TF_ASSERT_OK_AND_ASSIGN(*execute_request->mutable_execute_options(),
+                          execute_options.ToProto());
 
   TF_ASSERT_OK_AND_ASSIGN(std::shared_ptr<IfrtResponse> response,
                           CallBackend(std::move(request)));

@@ -50,7 +50,7 @@ struct GpuAllocatorConfig {
   Kind kind = Kind::kDefault;
 
   // Only used if kind == kBFC. The maximum fraction of available memory to
-  // allocate. This is the default value of XLA_PYTHON_CLIENT_MEM_FRACTION.
+  // allocate. This is the default value of XLA_CLIENT_MEM_FRACTION.
   //
   // If `gpu_system_memory_size` is set, it determines memory allocation.
   // `memory_fraction` won't be used in this case.
@@ -88,6 +88,21 @@ absl::StatusOr<std::unique_ptr<tsl::BFCAllocator>> CreateBFCAllocator(
 absl::StatusOr<std::unique_ptr<tsl::BFCAllocator>> CreateCollectiveBFCAllocator(
     se::StreamExecutor* executor, double memory_fraction,
     size_t collective_memory_size);
+
+// Represents topology of devices.
+struct TopologySizes {
+  int num_slices = 0;
+  int num_hosts_per_slice = 0;
+  int num_devices_per_host = 0;
+
+  // Returns number of devices in the topology.
+  int GetDeviceCount();
+  // Parses the topology description of the form
+  // "<num_slices> x <num_hosts_per_slice> x <num_devices_per_host>"
+  // and returns the parsed components on success.
+  static absl::StatusOr<TopologySizes> FromString(
+      std::string_view topology_string);
+};
 
 }  // namespace xla
 

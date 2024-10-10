@@ -41,9 +41,11 @@ limitations under the License.
 #include "mlir/IR/OwningOpRef.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Support/LogicalResult.h"
-#include "xla/client/xla_computation.h"
+#include "xla/hlo/builder/xla_computation.h"
 #include "xla/hlo/ir/hlo_module.h"
+#include "xla/hlo/translate/mhlo_to_hlo/mlir_hlo_to_hlo.h"
 #include "xla/layout.h"
+#include "xla/layout_util.h"
 #include "xla/literal.h"
 #include "xla/mlir_hlo/mhlo/transforms/passes.h"
 #include "xla/pjrt/c/pjrt_c_api.h"
@@ -67,7 +69,6 @@ limitations under the License.
 #include "xla/service/hlo_module_config.h"
 #include "xla/shape.h"
 #include "xla/shape_util.h"
-#include "xla/translate/mhlo_to_hlo/mlir_hlo_to_hlo.h"
 #include "xla/tsl/framework/allocator.h"
 #include "xla/util.h"
 #include "xla/xla.pb.h"
@@ -394,8 +395,9 @@ absl::StatusOr<std::unique_ptr<PjRtLoadedExecutable>> PjRtCApiClient::Compile(
   if (!pjrt_c_api()) llvm::report_fatal_error("pjrt_c_api is null");
   TF_ASSIGN_OR_RETURN(
       std::string serialized,
-      xla::Serialize(module, plugin_attributes()->pjrt_c_api_minor_version,
-                     xla::GetDefaultStablehloVersion()));
+      xla::Serialize(module,
+                     xla::GetDefaultStablehloVersion(
+                         plugin_attributes()->pjrt_c_api_minor_version)));
   std::string format(pjrt::kMlirFormat);
   return InitializeArgsAndCompile(this, c_api_, c_client_.get(), options,
                                   serialized, format);
@@ -642,8 +644,7 @@ absl::StatusOr<Layout> PjRtCApiClient::GetDefaultLayout(
       pjrt::FindExtension<PJRT_Layouts_Extension>(
           c_api, PJRT_Extension_Type::PJRT_Extension_Type_Layouts);
   if (extension == nullptr) {
-    return absl::UnimplementedError(
-        "Layouts extension not implemented in this PJRT plugin.");
+    return LayoutUtil::MakeDescendingLayout(dims.size());
   }
   PJRT_Layouts_PJRT_Client_GetDefaultLayout_Args args;
   args.struct_size = PJRT_Layouts_PJRT_Client_GetDefaultLayout_Args_STRUCT_SIZE;
@@ -1152,7 +1153,6 @@ PjRtCApiExecutable::GetHloModules() const {
   }
 
   if (program_format == ::pjrt::kMlirFormat) {
-    xla::HloProto hlo_proto;
     mlir::MLIRContext ctx;
     TF_ASSIGN_OR_RETURN(  // NOLINT(clang-diagnostic-pre-c++20-compat)
         mlir::OwningOpRef<mlir::ModuleOp> module,
@@ -1797,22 +1797,7 @@ std::unique_ptr<PjRtLayout> PjRtCApiBuffer::layout() const {
           pjrt::FindExtension<PJRT_Layouts_Extension>(
               c_api, PJRT_Extension_Type::PJRT_Extension_Type_Layouts);
       if (extension == nullptr) {
-        // TODO(jieying): Change this branch to return nullptr after the
-        // compatibility window (around Aug 24, 2024).
-        // TODO(b/343274728): implement some generic layouts behavior for
-        // plugins that don't support it.
-        PJRT_Buffer_GetMemoryLayout_Args args;
-        args.struct_size = PJRT_Buffer_GetMemoryLayout_Args_STRUCT_SIZE;
-        args.extension_start = nullptr;
-        args.buffer = buffer_.get();
-        pjrt::LogFatalIfPjrtError(
-            pjrt_c_api()->PJRT_Buffer_GetMemoryLayout(&args), pjrt_c_api());
-        CHECK_EQ(args.layout.type, PJRT_Buffer_MemoryLayout_Type_Tiled)
-            << "PjRtCApiBuffer only supports tiled device layouts";
-        absl::StatusOr<Layout> cpp_layout =
-            pjrt::ConvertToLayout(args.layout.tiled);
-        TF_CHECK_OK(cpp_layout.status());
-        layout_.emplace(*cpp_layout);
+        layout_.emplace(LayoutUtil::MakeDescendingLayout(dimensions().size()));
       } else {
         std::unique_ptr<PJRT_Layouts_MemoryLayout,
                         pjrt::PJRT_Layouts_MemoryLayoutDeleter>
@@ -2327,9 +2312,9 @@ absl::StatusOr<std::unique_ptr<PjRtExecutable>> PjRtCApiCompiler::Compile(
   if (client) {
     plugin_version = client->plugin_attributes()->pjrt_c_api_minor_version;
   }
-  TF_ASSIGN_OR_RETURN(std::string serialized,
-                      xla::Serialize(module, plugin_version,
-                                     xla::GetDefaultStablehloVersion()));
+  TF_ASSIGN_OR_RETURN(
+      std::string serialized,
+      xla::Serialize(module, xla::GetDefaultStablehloVersion(plugin_version)));
   std::string format(pjrt::kMlirFormat);
   return InitializeArgsAndCompileAot(c_api_, client, options, topology,
                                      serialized, format);

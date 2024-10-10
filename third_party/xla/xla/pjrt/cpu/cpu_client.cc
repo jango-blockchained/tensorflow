@@ -31,6 +31,7 @@ limitations under the License.
 #include <vector>
 
 #include "absl/algorithm/container.h"
+#include "absl/base/casts.h"
 #include "absl/base/dynamic_annotations.h"
 #include "absl/container/flat_hash_map.h"
 #include "absl/container/inlined_vector.h"
@@ -47,10 +48,14 @@ limitations under the License.
 #include "unsupported/Eigen/CXX11/Tensor"
 #include "mlir/IR/BuiltinOps.h"
 #include "xla/array.h"
+#include "xla/backends/cpu/runtime/buffer_allocations.h"
+#include "xla/backends/cpu/runtime/thunk.h"
+#include "xla/backends/cpu/runtime/thunk_executor.h"
 #include "xla/client/executable_build_options.h"
-#include "xla/client/xla_computation.h"
+#include "xla/cpu_function_runtime.h"
 #include "xla/debug_options_flags.h"
 #include "xla/executable_run_options.h"
+#include "xla/hlo/builder/xla_computation.h"
 #include "xla/hlo/ir/hlo_computation.h"
 #include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/hlo/ir/hlo_module.h"
@@ -83,9 +88,6 @@ limitations under the License.
 #include "xla/service/cpu/cpu_executable_run_options.h"
 #include "xla/service/cpu/cpu_runtime.h"
 #include "xla/service/cpu/cpu_xfeed.h"
-#include "xla/service/cpu/runtime/buffer_allocations.h"
-#include "xla/service/cpu/runtime/thunk.h"
-#include "xla/service/cpu/runtime/thunk_executor.h"
 #include "xla/service/cpu/simple_orc_jit.h"
 #include "xla/service/custom_call_status.h"
 #include "xla/service/custom_call_status_internal.h"
@@ -103,10 +105,10 @@ limitations under the License.
 #include "xla/tsl/concurrency/async_value.h"
 #include "xla/tsl/concurrency/async_value_ref.h"
 #include "xla/tsl/concurrency/ref_count.h"
+#include "xla/tsl/lib/strings/proto_serialization.h"
 #include "xla/util.h"
 #include "xla/xla.pb.h"
 #include "xla/xla_data.pb.h"
-#include "tsl/lib/strings/proto_serialization.h"
 #include "tsl/platform/casts.h"
 #include "tsl/platform/denormal.h"
 #include "tsl/platform/env.h"
@@ -421,7 +423,7 @@ TfrtCpuClient::TfrtCpuClient(
       owned_devices_(std::move(devices)),
       computation_placer_(std::make_unique<ComputationPlacer>()),
       eigen_intraop_pool_(new tsl::thread::ThreadPool(
-          tsl::Env::Default(), "XLAEigen",
+          tsl::Env::Default(), GetThreadOptions(), "XLAEigen",
           std::min(num_threads, kMaxIntraOpThreads))),
       eigen_intraop_device_(
           new Eigen::ThreadPoolDevice(eigen_intraop_pool_->AsEigenThreadPool(),
@@ -867,6 +869,11 @@ absl::StatusOr<std::unique_ptr<PjRtLoadedExecutable>> TfrtCpuClient::Compile(
   return Compile(xla_computation, options);
 }
 
+static bool IsAlignedData(void* ptr) {
+  return (absl::bit_cast<std::uintptr_t>(ptr) &
+          (cpu_function_runtime::MinAlign() - 1)) == 0;
+}
+
 absl::StatusOr<std::unique_ptr<PjRtBuffer>>
 TfrtCpuClient::CreateViewOfDeviceBuffer(
     void* device_ptr, const Shape& shape, PjRtDevice* device,
@@ -876,6 +883,13 @@ TfrtCpuClient::CreateViewOfDeviceBuffer(
     return Unimplemented(
         "TfrtCpuClient::CreateViewOfDeviceBuffer does not support `stream` "
         "argument.");
+  }
+  if (!IsAlignedData(device_ptr)) {
+    return InvalidArgument(
+        "Can't create a view of buffer with unaligned data, ptr: %#x is not "
+        "aligned to %d bytes. ",
+        reinterpret_cast<std::uintptr_t>(device_ptr),
+        cpu_function_runtime::MinAlign());
   }
   absl::InlinedVector<tsl::AsyncValueRef<MaybeOwningCpuMemory>, 4> buffers;
   size_t byte_size = ShapeUtil::ByteSizeOf(shape);

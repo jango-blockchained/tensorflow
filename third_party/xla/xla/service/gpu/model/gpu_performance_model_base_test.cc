@@ -47,6 +47,7 @@ class GpuPerformanceModelBaseTest : public HloTestBase {
 
   GpuHloCostAnalysis::Options options_{ShapeSizeBytesFunction(),
                                        /*per_second_rates=*/{},
+                                       /*min_latencies_seconds=*/{},
                                        /*count_multiple_input_accesses=*/true};
   // The reference times in the test cases below are measured
   // on A6000 by profiling the execution of the HLOs.
@@ -211,13 +212,13 @@ ENTRY entry_computation {
   TF_ASSERT_OK_AND_ASSIGN(auto module,
                           ParseAndReturnVerifiedModule(hlo_string));
 
-  auto fusion_analysis = AnalyzeFusion(
+  auto fusion_analysis = HloFusionAnalysis::Create(
       *module->entry_computation()->root_instruction(), device_info_);
   auto launch_dimensions =
       GpuPerformanceModelBase::EstimateFusionLaunchDimensions(fusion_analysis);
 
-  EXPECT_EQ(launch_dimensions.num_blocks(), 16);
-  EXPECT_EQ(launch_dimensions.num_threads_per_block(), 1024);
+  EXPECT_EQ(launch_dimensions.num_blocks(), 128);
+  EXPECT_EQ(launch_dimensions.num_threads_per_block(), 128);
 }
 
 TEST_F(GpuPerformanceModelBaseTest,
@@ -247,7 +248,7 @@ ENTRY e {
   TF_ASSERT_OK_AND_ASSIGN(auto module,
                           ParseAndReturnVerifiedModule(hlo_string));
 
-  auto fusion_analysis = AnalyzeFusion(
+  auto fusion_analysis = HloFusionAnalysis::Create(
       *module->entry_computation()->root_instruction(), device_info_);
   auto launch_dimensions =
       GpuPerformanceModelBase::EstimateFusionLaunchDimensions(fusion_analysis);
@@ -276,7 +277,7 @@ ENTRY e {
   TF_ASSERT_OK_AND_ASSIGN(auto module,
                           ParseAndReturnVerifiedModule(hlo_string));
 
-  auto fusion_analysis = AnalyzeFusion(
+  auto fusion_analysis = HloFusionAnalysis::Create(
       *module->entry_computation()->root_instruction(), device_info_);
   auto launch_dimensions =
       GpuPerformanceModelBase::EstimateFusionLaunchDimensions(fusion_analysis);

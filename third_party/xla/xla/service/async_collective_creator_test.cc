@@ -17,6 +17,9 @@ limitations under the License.
 
 #include <string>
 
+#include <gmock/gmock.h>
+#include <gtest/gtest.h>
+#include "absl/strings/string_view.h"
 #include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/hlo/ir/hlo_opcode.h"
 #include "xla/hlo/ir/hlo_schedule.h"
@@ -25,6 +28,7 @@ limitations under the License.
 #include "xla/tests/hlo_test_base.h"
 #include "xla/tsl/lib/core/status_test_util.h"
 #include "xla/util.h"
+#include "tsl/platform/statusor.h"
 
 namespace xla {
 namespace {
@@ -45,8 +49,8 @@ TEST_F(AsyncAllReduceCreatorTest, SplitsSingleAllReduce) {
     ROOT add = f32[] add(x, y)
   }
   ENTRY entry {
-    p0 = f32[8] parameter(0)
-    ROOT ar = f32[8] all-reduce(p0), to_apply=add
+    p0 = f32[1024] parameter(0)
+    ROOT ar = f32[1024] all-reduce(p0), to_apply=add
   }
   )";
 
@@ -54,6 +58,7 @@ TEST_F(AsyncAllReduceCreatorTest, SplitsSingleAllReduce) {
                           ParseAndReturnVerifiedModule(hlo_string));
   AsyncCollectiveCreator::CollectiveCreatorConfig config;
   config.convert_all_reduce = HloPredicateTrue;
+  config.all_reduce_min_threshold_in_bytes = 4096;
   TF_ASSERT_OK(AsyncCollectiveCreator(config).Run(hlo_module.get()).status());
 
   HloComputation* computation = hlo_module->entry_computation();

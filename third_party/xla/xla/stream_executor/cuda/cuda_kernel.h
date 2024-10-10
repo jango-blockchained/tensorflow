@@ -1,4 +1,4 @@
-/* Copyright 2015 The OpenXLA Authors.
+/* Copyright 2019 The OpenXLA Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -22,14 +22,48 @@ limitations under the License.
 #ifndef XLA_STREAM_EXECUTOR_CUDA_CUDA_KERNEL_H_
 #define XLA_STREAM_EXECUTOR_CUDA_CUDA_KERNEL_H_
 
+#include <cstddef>
+#include <cstdint>
+
+#include "absl/status/statusor.h"
+#include "xla/stream_executor/gpu/gpu_executor.h"
 #include "xla/stream_executor/gpu/gpu_kernel.h"
+#include "xla/stream_executor/gpu/gpu_types.h"
+#include "xla/stream_executor/launch_dim.h"
+#include "tsl/platform/logging.h"
 
-namespace stream_executor {
-namespace cuda {
+namespace stream_executor::gpu {
 
-using CUDAKernel = gpu::GpuKernel;
+class CudaKernel : public GpuKernel {
+ public:
+  explicit CudaKernel(GpuExecutor* gpu_executor)
+      : gpu_executor_(gpu_executor) {}
 
-}  // namespace cuda
-}  // namespace stream_executor
+  // Note that the function is unloaded when the module is unloaded, and the
+  // module that the function is contained in is owned by the GpuExecutor.
+  ~CudaKernel() override { gpu_executor_->UnloadKernel(this); }
+
+  // As arity cannot be reflected upon using the CUDA API, the arity is
+  // explicitly set during the GpuExecutor::GetKernel initialization process.
+  void set_arity(unsigned arity) { arity_ = arity; }
+  unsigned Arity() const override { return arity_; }
+
+  absl::StatusOr<int32_t> GetMaxOccupiedBlocksPerCore(
+      ThreadDim threads, size_t dynamic_shared_memory_bytes) const override;
+
+  // Simple accessor methods.
+  GpuFunctionHandle gpu_function() const override { return gpu_function_; }
+  void set_gpu_function(GpuFunctionHandle gpu_function) {
+    gpu_function_ = gpu_function;
+  }
+
+ private:
+  GpuExecutor* gpu_executor_ = nullptr;
+
+  CUfunction gpu_function_ = nullptr;  // wrapped CUDA kernel handle
+  unsigned arity_ = 0;  // number of formal parameters the kernel takes
+};
+
+}  // namespace stream_executor::gpu
 
 #endif  // XLA_STREAM_EXECUTOR_CUDA_CUDA_KERNEL_H_

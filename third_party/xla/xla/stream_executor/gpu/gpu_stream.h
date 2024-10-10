@@ -34,14 +34,14 @@ limitations under the License.
 #include "xla/stream_executor/gpu/gpu_event.h"
 #include "xla/stream_executor/gpu/gpu_executor.h"
 #include "xla/stream_executor/gpu/gpu_types.h"
+#include "xla/stream_executor/kernel.h"
+#include "xla/stream_executor/launch_dim.h"
 #include "xla/stream_executor/platform.h"
 #include "xla/stream_executor/stream.h"
 #include "xla/stream_executor/stream_common.h"
 
 namespace stream_executor {
 namespace gpu {
-
-class GpuExecutor;
 
 // Wraps a GpuStreamHandle in order to satisfy the platform-independent
 // StreamInterface.
@@ -50,10 +50,11 @@ class GpuExecutor;
 class GpuStream : public StreamCommon {
  public:
   GpuStream(GpuExecutor* parent, std::unique_ptr<GpuEvent> completed_event,
-            std::optional<std::variant<StreamPriority, int>> priority)
+            std::optional<std::variant<StreamPriority, int>> priority,
+            GpuStreamHandle gpu_stream)
       : StreamCommon(parent),
         parent_(parent),
-        gpu_stream_(nullptr),
+        gpu_stream_(gpu_stream),
         completed_event_(std::move(completed_event)) {
     if (priority.has_value()) {
       stream_priority_ = priority.value();
@@ -62,9 +63,6 @@ class GpuStream : public StreamCommon {
 
   // Note: teardown is handled by a parent's call to DeallocateStream.
   ~GpuStream() override;
-
-  // Explicitly initialize the CUDA resources associated with this stream.
-  absl::Status Init();
 
   std::variant<StreamPriority, int> priority() const override {
     return stream_priority_;
@@ -85,9 +83,6 @@ class GpuStream : public StreamCommon {
     return gpu_stream_;
   }
 
-  absl::Status WaitFor(Stream* other) override;
-  absl::Status WaitFor(Event* event) override;
-  absl::Status RecordEvent(Event* event) override;
   absl::Status MemZero(DeviceMemoryBase* location, uint64_t size) override;
   absl::Status Memset32(DeviceMemoryBase* location, uint32_t pattern,
                         uint64_t size) override;
@@ -103,8 +98,18 @@ class GpuStream : public StreamCommon {
   void set_name(absl::string_view name) override;
   absl::StatusOr<std::unique_ptr<EventBasedTimer>> CreateEventBasedTimer(
       bool use_delay_kernel) override;
+  absl::Status Launch(const ThreadDim& thread_dims, const BlockDim& block_dims,
+                      const Kernel& k, const KernelArgs& args) override;
+  absl::Status Launch(const ThreadDim& thread_dims, const BlockDim& block_dims,
+                      const ClusterDim& cluster_dims, const Kernel& k,
+                      const KernelArgs& args) override;
 
  private:
+  // Helper method to launch a kernel with optional cluster dimensions.
+  absl::Status Launch(const ThreadDim& thread_dims, const BlockDim& block_dims,
+                      const std::optional<ClusterDim>& cluster_dims,
+                      const Kernel& kernel, const KernelArgs& args);
+
   GpuExecutor* parent_;         // Executor that spawned this stream.
   GpuStreamHandle gpu_stream_;  // Wrapped CUDA stream handle.
   std::variant<StreamPriority, int> stream_priority_;

@@ -62,10 +62,10 @@ limitations under the License.
 #include "xla/client/lib/conv_grad_size_util.h"
 #include "xla/client/padding.h"
 #include "xla/client/sharding_builder.h"
+#include "xla/hlo/translate/hlo_to_mhlo/attribute_importer.h"
 #include "xla/mlir_hlo/mhlo/IR/hlo_ops.h"
 #include "xla/mlir_hlo/utils/convert_op_folder.h"
 #include "xla/mlir_hlo/utils/hlo_utils.h"
-#include "xla/translate/hlo_to_mhlo/attribute_importer.h"
 #include "xla/xla_data.pb.h"
 #include "tensorflow/core/framework/kernel_shape_util.h"
 #include "tensorflow/core/framework/rng_alg.h"
@@ -3145,7 +3145,8 @@ class ConvertBatchMatMulV2Op : public OpRewritePattern<TF::BatchMatMulV2Op> {
     // (The batch dimensions are checked by the broadcasting logic)
     rewriter.replaceOpWithNewOp<DotGeneralOp>(
         op, op.getType(), lhs, rhs, dimension_numbers,
-        /*precision_config=*/GetPrecisionConfig(&rewriter));
+        /*precision_config=*/GetPrecisionConfig(&rewriter),
+        /*algorithm=*/DotAlgorithmAttr{});
     return success();
   }
 };

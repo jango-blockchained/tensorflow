@@ -53,7 +53,7 @@ limitations under the License.
 #include "xla/pjrt/distributed/service.h"
 #include "xla/pjrt/pjrt_compiler.h"
 #include "xla/pjrt/status_casters.h"
-#include "xla/python/ifrt/device.h"
+#include "xla/python/ifrt/device_list.h"
 #include "xla/python/ifrt/executable.h"
 #include "xla/python/ifrt/topology.h"
 #include "xla/python/ifrt_proxy/client/py_module.h"
@@ -61,18 +61,19 @@ limitations under the License.
 #include "xla/python/py_client.h"
 #include "xla/python/py_program.h"
 #include "xla/service/cpu/collectives_interface.h"
-#include "xla/tsl/python/lib/core/numpy.h"  //NOLINT
+#include "xla/tsl/concurrency/ref_count.h"
+#include "xla/tsl/python/lib/core/numpy.h"  // NOLINT
 
-#ifdef __linux__
+#if defined(__linux__)
 #include "gloo/transport/tcp/attr.h"
 #include "gloo/transport/tcp/device.h"
 #include "xla/pjrt/cpu/gloo_collectives.h"
 #include "xla/pjrt/cpu/gloo_kv_store.h"
-#elif __APPLE__ && defined(__x86_64__)
+#elif defined(__APPLE__)
 #include "gloo/transport/uv/device.h"
-#include "xla/pjrt/cpu/gloo_collectives.h"
-#include "xla/pjrt/cpu/gloo_kv_store.h"
-#endif  // __linux__
+#include "xla/pjrt/cpu/gloo_collectives.h"  // NOLINT
+#include "xla/pjrt/cpu/gloo_kv_store.h"  // NOLINT
+#endif  // defined(__linux__)
 
 #if !defined(_WIN32) && !defined(PLATFORM_GOOGLE)
 #include "xla/pjrt/cpu/mpi_collectives.h"
@@ -96,7 +97,6 @@ limitations under the License.
 #include "xla/python/nb_absl_span.h"  // IWYU pragma: keep
 #include "xla/python/nb_class_ptr.h"
 #include "xla/python/ops.h"
-#include "xla/python/outfeed_receiver_py.h"
 #include "xla/python/pjit.h"
 #include "xla/python/pjrt_ifrt/pjrt_client.h"
 #include "xla/python/pjrt_ifrt/pjrt_executable.h"
@@ -181,6 +181,10 @@ NB_MODULE(xla_extension, m_nb) {
   // Exceptions
   nb::exception<XlaRuntimeError> xla_runtime_error(m_nb, "XlaRuntimeError",
                                                    PyExc_RuntimeError);
+  xla_runtime_error.attr("__doc__") = nb::str(
+      "Runtime errors thrown by the JAX runtime. While the JAX runtime may "
+      "raise other exceptions as well, most exceptions thrown by the runtime "
+      "are instances of this class.");
 
   // Types
   nb::enum_<PrimitiveType>(m_nb, "PrimitiveType", nb::is_arithmetic())
@@ -197,6 +201,9 @@ NB_MODULE(xla_extension, m_nb) {
       .value("U32", U32)
       .value("U64", U64)
       .value("F16", F16)
+      // TODO: Uncomment once the minimum ml_dtypes in JAX is >= 0.5.0.
+      // .value("F8E3M4", F8E3M4)
+      // .value("F8E4M3", F8E4M3)
       .value("F8E4M3FN", F8E4M3FN)
       .value("F8E4M3B11FNUZ", F8E4M3B11FNUZ)
       .value("F8E4M3FNUZ", F8E4M3FNUZ)
@@ -275,7 +282,7 @@ NB_MODULE(xla_extension, m_nb) {
         auto tcp_device = gloo::transport::tcp::CreateDevice(tcp_attrs);
         return std::make_shared<cpu::GlooCollectives>(std::move(gloo_kv_store),
                                                       std::move(tcp_device));
-#elif defined(__APPLE__) && defined(__x86_64__)
+#elif defined(__APPLE__)
         std::shared_ptr<KeyValueStoreInterface> kv_store = nullptr;
         if (distributed_client != nullptr) {
           kv_store = GetDistributedKeyValueStore(distributed_client,
@@ -292,11 +299,10 @@ NB_MODULE(xla_extension, m_nb) {
         auto uv_device = gloo::transport::uv::CreateDevice(uv_attrs);
         return std::make_shared<cpu::GlooCollectives>(std::move(gloo_kv_store),
                                                       std::move(uv_device));
-#else   // __linux__
+#else   // defined(__linux__)
         throw xla::XlaRuntimeError(
-            "make_gloo_tcp_collectives only implemented for linux and x86_64 "
-            "macos");
-#endif  // __linux__
+            "make_gloo_tcp_collectives only implemented for linux and macos");
+#endif  // defined(__linux__)
       },
       nb::arg("distributed_client"), nb::arg("hostname").none() = std::nullopt,
       nb::arg("interface").none() = std::nullopt);
@@ -438,7 +444,7 @@ NB_MODULE(xla_extension, m_nb) {
                    "get_topology_for_devices requires >= 1 devices.");
              }
              auto client = py_devices[0]->client();
-             ifrt::DeviceList::Devices ifrt_devices;
+             ifrt::BasicDeviceList::Devices ifrt_devices;
              ifrt_devices.reserve(py_devices.size());
              for (const auto& py_device : py_devices) {
                if (py_device->client().get() != client.get()) {
@@ -448,7 +454,8 @@ NB_MODULE(xla_extension, m_nb) {
                }
                ifrt_devices.push_back(py_device->device());
              }
-             ifrt::DeviceList device_list(std::move(ifrt_devices));
+             tsl::RCReference<ifrt::DeviceList> device_list =
+                 ifrt::BasicDeviceList::Create(std::move(ifrt_devices));
              return xla::ValueOrThrow(
                  client->ifrt_client()->GetTopologyForDevices(device_list));
            });
@@ -583,7 +590,6 @@ NB_MODULE(xla_extension, m_nb) {
   BuildIfrtProgramsSubmodule(m_nb);
   BuildProfilerSubmodule(m_nb);
   BuildOpsSubmodule(m_nb);
-  BuildOutfeedReceiverSubmodule(m_nb);
   BuildPytreeSubmodule(m_nb);
   jax::BuildJaxjitSubmodule(m_nb);
   jax::BuildPmapSubmodule(m_nb);
@@ -774,8 +780,10 @@ NB_MODULE(xla_extension, m_nb) {
          std::optional<std::function<void(absl::Status,
                                           bool coordinator_reported_failure)>>
              missed_heartbeat_callback,
-         std::optional<bool> shutdown_on_destruction)
+         std::optional<bool> shutdown_on_destruction,
+         std::optional<bool> use_compression)
           -> std::shared_ptr<DistributedRuntimeClient> {
+        bool compression = use_compression.value_or(false);
         DistributedRuntimeClient::Options options;
         options.node_id = node_id;
         if (rpc_timeout.has_value()) {
@@ -800,7 +808,7 @@ NB_MODULE(xla_extension, m_nb) {
         if (shutdown_on_destruction.has_value()) {
           options.shutdown_on_destruction = *shutdown_on_destruction;
         }
-        return GetDistributedRuntimeClient(address, options);
+        return GetDistributedRuntimeClient(address, options, compression);
       },
       nb::arg("address"), nb::arg("node_id"),
       nb::arg("rpc_timeout").none() = std::nullopt,
@@ -809,7 +817,8 @@ NB_MODULE(xla_extension, m_nb) {
       nb::arg("heartbeat_interval").none() = std::nullopt,
       nb::arg("max_missing_heartbeats").none() = std::nullopt,
       nb::arg("missed_heartbeat_callback").none() = std::nullopt,
-      nb::arg("shutdown_on_destruction").none() = std::nullopt);
+      nb::arg("shutdown_on_destruction").none() = std::nullopt,
+      nb::arg("use_compression").none() = std::nullopt);
 
   m_nb.def("collect_garbage", []() { GlobalPyRefManager()->CollectGarbage(); });
 

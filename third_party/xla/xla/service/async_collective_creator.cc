@@ -19,8 +19,13 @@ limitations under the License.
 #include <iterator>
 #include <vector>
 
+#include "absl/algorithm/container.h"
 #include "absl/container/flat_hash_map.h"
+#include "absl/container/flat_hash_set.h"
+#include "absl/log/check.h"
 #include "absl/log/log.h"
+#include "absl/strings/string_view.h"
+#include "absl/types/span.h"
 #include "xla/frontend_attributes.h"
 #include "xla/hlo/ir/hlo_casting_utils.h"
 #include "xla/hlo/ir/hlo_computation.h"
@@ -29,8 +34,11 @@ limitations under the License.
 #include "xla/hlo/ir/hlo_opcode.h"
 #include "xla/hlo/ir/hlo_schedule.h"
 #include "xla/service/shape_inference.h"
+#include "xla/shape.h"
+#include "xla/shape_util.h"
 #include "xla/util.h"
 #include "tsl/platform/errors.h"
+#include "tsl/platform/statusor.h"
 
 namespace xla {
 namespace {
@@ -129,6 +137,17 @@ absl::StatusOr<ReplacedAsync> CreateAsyncStartDone(
   return ReplacedAsync{start, done};
 }
 
+int64_t GetShapeSize(const Shape& shape) {
+  int64_t size_in_bytes = 0;
+  if (shape.IsTuple()) {
+    for (int64_t i = 0; i < shape.tuple_shapes_size(); ++i) {
+      size_in_bytes += GetShapeSize(shape.tuple_shapes(i));
+    }
+    return size_in_bytes;
+  }
+  return ShapeUtil::ByteSizeOfElements(shape);
+}
+
 }  // namespace
 
 // Find all supported collective ops first as we can't modify the instructions
@@ -139,7 +158,9 @@ std::vector<HloInstruction*> AsyncCollectiveCreator::MatchCollectives(
   for (HloInstruction* instruction : computation->instructions()) {
     const HloOpcode op = instruction->opcode();
     if ((op == HloOpcode::kAllReduce &&
-         config_.convert_all_reduce(instruction)) ||
+         config_.convert_all_reduce(instruction) &&
+         GetShapeSize(instruction->shape()) >=
+             config_.all_reduce_min_threshold_in_bytes) ||
         (op == HloOpcode::kAllGather &&
          config_.convert_all_gather(instruction)) ||
         (op == HloOpcode::kCollectiveBroadcast &&

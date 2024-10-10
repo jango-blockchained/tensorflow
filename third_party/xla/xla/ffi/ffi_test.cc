@@ -37,12 +37,44 @@ limitations under the License.
 #include "xla/ffi/ffi_api.h"
 #include "xla/stream_executor/device_memory.h"
 #include "xla/stream_executor/stream.h"
+#include "xla/tsl/concurrency/async_value_ref.h"
+#include "xla/tsl/concurrency/chain.h"
 #include "xla/tsl/lib/core/status_test_util.h"
 #include "xla/xla_data.pb.h"
+#include "tsl/platform/env.h"
 #include "tsl/platform/status_matchers.h"
 #include "tsl/platform/statusor.h"
 #include "tsl/platform/test.h"
 #include "tsl/platform/test_benchmark.h"
+#include "tsl/platform/threadpool.h"
+
+#define EIGEN_USE_THREADS
+#include "unsupported/Eigen/CXX11/Tensor"
+
+namespace xla::ffi {
+
+struct PairOfI32AndF32 {
+  int32_t i32;
+  float f32;
+};
+
+struct TupleOfI32 {
+  int32_t i32_0;
+  int32_t i32_1;
+  int32_t i32_2;
+  int32_t i32_3;
+};
+
+}  // namespace xla::ffi
+
+XLA_FFI_REGISTER_STRUCT_ATTR_DECODING(::xla::ffi::PairOfI32AndF32,
+                                      ::xla::ffi::StructMember<int32_t>("i32"),
+                                      ::xla::ffi::StructMember<float>("f32"));
+XLA_FFI_REGISTER_STRUCT_ATTR_DECODING(
+    ::xla::ffi::TupleOfI32, ::xla::ffi::StructMember<int32_t>("i32_0"),
+    ::xla::ffi::StructMember<int32_t>("i32_1"),
+    ::xla::ffi::StructMember<int32_t>("i32_2"),
+    ::xla::ffi::StructMember<int32_t>("i32_3"));
 
 namespace xla::ffi {
 
@@ -56,14 +88,14 @@ TEST(FfiTest, StaticHandlerRegistration) {
   static constexpr auto* noop = +[] { return absl::OkStatus(); };
 
   // Use explicit binding specification.
-  XLA_FFI_DEFINE_HANDLER(NoOp0, noop, Ffi::Bind());
+  XLA_FFI_DEFINE_HANDLER(NoOp0, noop, Ffi::Bind(),
+                         {Traits::kCmdBufferCompatible});
 
   // Automatically infer binding specification from function signature.
   XLA_FFI_DEFINE_HANDLER(NoOp1, noop);
 
   XLA_FFI_REGISTER_HANDLER(GetXlaFfiApi(), "no-op-0", "Host", NoOp0);
-  XLA_FFI_REGISTER_HANDLER(GetXlaFfiApi(), "no-op-1", "Host", NoOp1,
-                           XLA_FFI_HANDLER_TRAITS_COMMAND_BUFFER_COMPATIBLE);
+  XLA_FFI_REGISTER_HANDLER(GetXlaFfiApi(), "no-op-1", "Host", NoOp1);
 
   auto handler0 = FindHandler("no-op-0", "Host");
   auto handler1 = FindHandler("no-op-1", "Host");
@@ -71,14 +103,24 @@ TEST(FfiTest, StaticHandlerRegistration) {
   TF_ASSERT_OK(handler0.status());
   TF_ASSERT_OK(handler1.status());
 
-  ASSERT_EQ(handler0->traits, 0);
-  ASSERT_EQ(handler1->traits, XLA_FFI_HANDLER_TRAITS_COMMAND_BUFFER_COMPATIBLE);
+  ASSERT_EQ(handler0->traits, XLA_FFI_HANDLER_TRAITS_COMMAND_BUFFER_COMPATIBLE);
+  ASSERT_EQ(handler1->traits, 0);
 
   // Check that platform name was canonicalized an we can find handlers
   // registered for "Host" platform as "Cpu" handlers.
   TF_ASSERT_OK_AND_ASSIGN(auto handlers, StaticRegisteredHandlers("Cpu"));
   EXPECT_THAT(handlers,
               UnorderedElementsAre(Pair("no-op-0", _), Pair("no-op-1", _)));
+}
+
+TEST(FfiTest, RegistrationTraitsBackwardsCompatibility) {
+  static constexpr auto* noop = +[] { return absl::OkStatus(); };
+  XLA_FFI_DEFINE_HANDLER(NoOp, noop, Ffi::Bind());
+  XLA_FFI_REGISTER_HANDLER(GetXlaFfiApi(), "traits-bwd-compat", "Host", NoOp,
+                           XLA_FFI_HANDLER_TRAITS_COMMAND_BUFFER_COMPATIBLE);
+  auto handler = FindHandler("traits-bwd-compat", "Host");
+  TF_ASSERT_OK(handler.status());
+  ASSERT_EQ(handler->traits, XLA_FFI_HANDLER_TRAITS_COMMAND_BUFFER_COMPATIBLE);
 }
 
 // Declare XLA FFI handler as a function (extern "C" declaration).
@@ -90,18 +132,12 @@ XLA_FFI_DEFINE_HANDLER_SYMBOL(NoOpHandler, NoOp, Ffi::Bind());
 
 TEST(FfiTest, StaticHandlerSymbolRegistration) {
   XLA_FFI_REGISTER_HANDLER(GetXlaFfiApi(), "no-op-sym-0", "Host", NoOpHandler);
-  XLA_FFI_REGISTER_HANDLER(GetXlaFfiApi(), "no-op-sym-1", "Host", NoOpHandler,
-                           XLA_FFI_HANDLER_TRAITS_COMMAND_BUFFER_COMPATIBLE);
 
   // Use "Cpu" platform to check that platform name was canonicalized.
   auto handler0 = FindHandler("no-op-sym-0", "Cpu");
-  auto handler1 = FindHandler("no-op-sym-1", "Cpu");
 
   TF_ASSERT_OK(handler0.status());
-  TF_ASSERT_OK(handler1.status());
-
   ASSERT_EQ(handler0->traits, 0);
-  ASSERT_EQ(handler1->traits, XLA_FFI_HANDLER_TRAITS_COMMAND_BUFFER_COMPATIBLE);
 }
 
 TEST(FfiTest, ForwardError) {
@@ -162,8 +198,10 @@ TEST(FfiTest, WrongNumAttrs) {
 
   auto status = Call(*handler, call_frame);
 
-  ASSERT_EQ(status.message(),
-            "Wrong number of attributes: expected 1 but got 2");
+  EXPECT_THAT(
+      status,
+      StatusIs(absl::StatusCode::kInvalidArgument,
+               HasSubstr("Wrong number of attributes: expected 1 but got 2")));
 }
 
 TEST(FfiTest, BuiltinAttributes) {
@@ -343,10 +381,10 @@ TEST(FfiTest, AttrsAsDictionary) {
 }
 
 TEST(FfiTest, DictionaryAttr) {
-  CallFrameBuilder::FlatAttributesMap dict0;
+  CallFrameBuilder::AttributesMap dict0;
   dict0.try_emplace("i32", 42);
 
-  CallFrameBuilder::FlatAttributesMap dict1;
+  CallFrameBuilder::AttributesMap dict1;
   dict1.try_emplace("f32", 42.0f);
 
   CallFrameBuilder::AttributesBuilder attrs;
@@ -384,17 +422,8 @@ TEST(FfiTest, DictionaryAttr) {
   TF_ASSERT_OK(status);
 }
 
-struct PairOfI32AndF32 {
-  int32_t i32;
-  float f32;
-};
-
-XLA_FFI_REGISTER_STRUCT_ATTR_DECODING(PairOfI32AndF32,
-                                      StructMember<int32_t>("i32"),
-                                      StructMember<float>("f32"));
-
 TEST(FfiTest, StructAttr) {
-  CallFrameBuilder::FlatAttributesMap dict;
+  CallFrameBuilder::AttributesMap dict;
   dict.try_emplace("i32", 42);
   dict.try_emplace("f32", 42.0f);
 
@@ -676,6 +705,129 @@ TEST(FfiTest, RemainingRets) {
   TF_ASSERT_OK(status);
 }
 
+TEST(FfiTest, OptionalArgs) {
+  std::vector<float> storage(4, 0.0f);
+  se::DeviceMemoryBase memory(storage.data(), 4 * sizeof(float));
+
+  CallFrameBuilder builder(/*num_args=*/1, /*num_rets=*/0);
+  builder.AddBufferArg(memory, PrimitiveType::F32, /*dims=*/{2, 2});
+  auto call_frame = builder.Build();
+
+  {  // Single optional argument.
+    auto fn = [&](std::optional<AnyBuffer> arg0) {
+      EXPECT_TRUE(arg0.has_value());
+      return absl::OkStatus();
+    };
+
+    auto handler = Ffi::Bind().OptionalArg<AnyBuffer>().To(fn);
+    auto status = Call(*handler, call_frame);
+
+    TF_ASSERT_OK(status);
+  }
+
+  {  // Two optional arguments.
+    auto fn = [&](std::optional<AnyBuffer> arg0,
+                  std::optional<AnyBuffer> arg1) {
+      EXPECT_TRUE(arg0.has_value());
+      EXPECT_FALSE(arg1.has_value());
+      return absl::OkStatus();
+    };
+
+    auto handler =
+        Ffi::Bind().OptionalArg<AnyBuffer>().OptionalArg<AnyBuffer>().To(fn);
+    auto status = Call(*handler, call_frame);
+
+    TF_ASSERT_OK(status);
+  }
+
+  {  // Optional argument after a regular one.
+    auto fn = [&](AnyBuffer arg0, std::optional<AnyBuffer> arg1) {
+      EXPECT_FALSE(arg1.has_value());
+      return absl::OkStatus();
+    };
+
+    auto handler = Ffi::Bind().Arg<AnyBuffer>().OptionalArg<AnyBuffer>().To(fn);
+    auto status = Call(*handler, call_frame);
+
+    TF_ASSERT_OK(status);
+  }
+
+  {  // Remaining arguments after optional one.
+    auto fn = [&](std::optional<AnyBuffer> arg0, RemainingArgs args) {
+      EXPECT_TRUE(arg0.has_value());
+      EXPECT_EQ(args.size(), 0);
+      return absl::OkStatus();
+    };
+
+    auto handler = Ffi::Bind().OptionalArg<AnyBuffer>().RemainingArgs().To(fn);
+    auto status = Call(*handler, call_frame);
+
+    TF_ASSERT_OK(status);
+  }
+}
+
+TEST(FfiTest, OptionalRets) {
+  std::vector<float> storage(4, 0.0f);
+  se::DeviceMemoryBase memory(storage.data(), 4 * sizeof(float));
+
+  CallFrameBuilder builder(/*num_args=*/0, /*num_rets=*/1);
+  builder.AddBufferRet(memory, PrimitiveType::F32, /*dims=*/{2, 2});
+  auto call_frame = builder.Build();
+
+  {  // Single optional result.
+    auto fn = [&](std::optional<Result<AnyBuffer>> ret0) {
+      EXPECT_TRUE(ret0.has_value());
+      return absl::OkStatus();
+    };
+
+    auto handler = Ffi::Bind().OptionalRet<AnyBuffer>().To(fn);
+    auto status = Call(*handler, call_frame);
+
+    TF_ASSERT_OK(status);
+  }
+
+  {  // Two optional results.
+    auto fn = [&](std::optional<Result<AnyBuffer>> ret0,
+                  std::optional<Result<AnyBuffer>> ret1) {
+      EXPECT_TRUE(ret0.has_value());
+      EXPECT_FALSE(ret1.has_value());
+      return absl::OkStatus();
+    };
+
+    auto handler =
+        Ffi::Bind().OptionalRet<AnyBuffer>().OptionalRet<AnyBuffer>().To(fn);
+    auto status = Call(*handler, call_frame);
+
+    TF_ASSERT_OK(status);
+  }
+
+  {  // Optional result after a regular one.
+    auto fn = [&](Result<AnyBuffer> ret0,
+                  std::optional<Result<AnyBuffer>> ret1) {
+      EXPECT_FALSE(ret1.has_value());
+      return absl::OkStatus();
+    };
+
+    auto handler = Ffi::Bind().Ret<AnyBuffer>().OptionalRet<AnyBuffer>().To(fn);
+    auto status = Call(*handler, call_frame);
+
+    TF_ASSERT_OK(status);
+  }
+
+  {  // Remaining results after optional one.
+    auto fn = [&](std::optional<Result<AnyBuffer>> ret0, RemainingRets rets) {
+      EXPECT_TRUE(ret0.has_value());
+      EXPECT_EQ(rets.size(), 0);
+      return absl::OkStatus();
+    };
+
+    auto handler = Ffi::Bind().OptionalRet<AnyBuffer>().RemainingRets().To(fn);
+    auto status = Call(*handler, call_frame);
+
+    TF_ASSERT_OK(status);
+  }
+}
+
 TEST(FfiTest, RunOptionsCtx) {
   auto call_frame = CallFrameBuilder(/*num_args=*/0, /*num_rets=*/0).Build();
   auto* expected = reinterpret_cast<se::Stream*>(0x01234567);
@@ -686,7 +838,7 @@ TEST(FfiTest, RunOptionsCtx) {
   };
 
   CallOptions options;
-  options.stream = expected;
+  options.backend_options = CallOptions::GpuOptions{expected};
 
   auto handler = Ffi::Bind().Ctx<Stream>().To(fn);
   auto status = Call(*handler, call_frame, options);
@@ -820,11 +972,12 @@ TEST(FfiTest, UpdateBufferArgumentsAndResults) {
 
 TEST(FfiTest, DuplicateHandlerTraits) {
   static constexpr auto* noop = +[] { return absl::OkStatus(); };
-  XLA_FFI_DEFINE_HANDLER(NoOp, noop, Ffi::Bind());
-  XLA_FFI_REGISTER_HANDLER(GetXlaFfiApi(), "duplicate-traits", "Host", NoOp,
-                           XLA_FFI_HANDLER_TRAITS_COMMAND_BUFFER_COMPATIBLE);
+  XLA_FFI_DEFINE_HANDLER(NoOp1, noop, Ffi::Bind());
+  XLA_FFI_DEFINE_HANDLER(NoOp2, noop, Ffi::Bind(),
+                         {Traits::kCmdBufferCompatible});
+  XLA_FFI_REGISTER_HANDLER(GetXlaFfiApi(), "duplicate-traits", "Host", NoOp1);
   auto status = TakeStatus(Ffi::RegisterStaticHandler(
-      GetXlaFfiApi(), "duplicate-traits", "Host", NoOp));
+      GetXlaFfiApi(), "duplicate-traits", "Host", NoOp2));
   EXPECT_TRUE(
       absl::StrContains(status.message(), "Duplicate FFI handler registration"))
       << "status.message():\n"
@@ -855,17 +1008,69 @@ TEST(FfiTest, AllowRegisterDuplicateWhenEqual) {
   TF_ASSERT_OK(status);
 }
 
-TEST(FfiTest, ApiVersion) {
-  auto handler = Ffi::Bind().To([]() { return absl::OkStatus(); });
-  CallFrameBuilder builder(/*num_args=*/0, /*num_rets=*/0);
-  auto call_frame = builder.Build();
-  auto api = GetXlaFfiApi();
-  XLA_FFI_Api api_copy = *api;
-  api_copy.api_version.major_version += 1;
-  auto status = CallWithApi(&api_copy, *handler, call_frame);
-  EXPECT_TRUE(absl::StrContains(status.message(), "FFI handler's API version"))
-      << "status.message():\n"
-      << status.message() << "\n";
+TEST(FfiTest, AsyncHandler) {
+  tsl::thread::ThreadPool pool(tsl::Env::Default(), "ffi-test", 2);
+  Eigen::ThreadPoolDevice device(pool.AsEigenThreadPool(), pool.NumThreads());
+
+  int32_t value = 0;
+
+  // Handler completes execution asynchronously on a given thread pool.
+  auto fn = [&](const Eigen::ThreadPoolDevice* device) {
+    auto async_value = tsl::MakeConstructedAsyncValueRef<tsl::Chain>();
+
+    device->enqueueNoNotification([&, async_value]() mutable {
+      value = 42;
+      async_value.SetStateConcrete();
+    });
+
+    return async_value;
+  };
+
+  auto handler = Ffi::Bind().Ctx<IntraOpThreadPool>().To(fn);
+  CallFrame call_frame =
+      CallFrameBuilder(/*num_args=*/0, /*num_rets=*/0).Build();
+
+  CallOptions options;
+  options.backend_options = CallOptions::CpuOptions{&device};
+
+  {  // Synchronous call.
+    absl::Status status = Call(*handler, call_frame, options);
+    TF_ASSERT_OK(status);
+    EXPECT_EQ(value, 42);
+  }
+
+  value = 0;  // reset value between calls
+
+  {  // Asynchronous call.
+    tsl::AsyncValueRef<tsl::Chain> async_value =
+        CallAsync(*handler, call_frame, options);
+    tsl::BlockUntilReady(async_value);
+    ASSERT_TRUE(async_value.IsConcrete());
+    EXPECT_EQ(value, 42);
+  }
+}
+
+TEST(FfiTest, Metadata) {
+  static constexpr auto* noop = +[] { return absl::OkStatus(); };
+  XLA_FFI_DEFINE_HANDLER(handler, noop, Ffi::Bind());
+  auto maybe_metadata = GetMetadata(handler);
+  EXPECT_TRUE(maybe_metadata.ok());
+  auto metadata = maybe_metadata.value();
+  EXPECT_EQ(metadata.traits, 0);
+  EXPECT_EQ(metadata.api_version.major_version, XLA_FFI_API_MAJOR);
+  EXPECT_EQ(metadata.api_version.minor_version, XLA_FFI_API_MINOR);
+}
+
+TEST(FfiTest, MetadataTraits) {
+  static constexpr auto* noop = +[] { return absl::OkStatus(); };
+  XLA_FFI_DEFINE_HANDLER(handler, noop, Ffi::Bind(),
+                         {Traits::kCmdBufferCompatible});
+  auto maybe_metadata = GetMetadata(handler);
+  EXPECT_TRUE(maybe_metadata.ok());
+  auto metadata = maybe_metadata.value();
+  EXPECT_EQ(metadata.traits, XLA_FFI_HANDLER_TRAITS_COMMAND_BUFFER_COMPATIBLE);
+  EXPECT_EQ(metadata.api_version.major_version, XLA_FFI_API_MAJOR);
+  EXPECT_EQ(metadata.api_version.minor_version, XLA_FFI_API_MINOR);
 }
 
 //===----------------------------------------------------------------------===//
@@ -966,6 +1171,31 @@ void BM_AnyBufferArgX8(benchmark::State& state) {
 BENCHMARK(BM_AnyBufferArgX8);
 
 //===----------------------------------------------------------------------===//
+// BM_AsyncAnyBufferArgX1
+//===----------------------------------------------------------------------===//
+
+void BM_AsyncAnyBufferArgX1(benchmark::State& state) {
+  auto call_frame = WithBufferArgs(1).Build();
+
+  static tsl::AsyncValueOwningRef<tsl::Chain>* done = [] {
+    auto* storage = new tsl::internal::AsyncValueStorage<tsl::Chain>();
+    return new tsl::AsyncValueOwningRef<tsl::Chain>(
+        tsl::MakeAvailableAsyncValueRef<tsl::Chain>(*storage));
+  }();
+
+  auto handler = Ffi::Bind().Arg<AnyBuffer>().To([&](auto buffer) {
+    benchmark::DoNotOptimize(buffer);
+    return done->AsRef();
+  });
+
+  for (auto _ : state) {
+    CHECK_OK(Call(*handler, call_frame));
+  }
+}
+
+BENCHMARK(BM_AsyncAnyBufferArgX1);
+
+//===----------------------------------------------------------------------===//
 // BM_BufferArgX1
 //===----------------------------------------------------------------------===//
 
@@ -1050,19 +1280,6 @@ BENCHMARK(BM_BufferArgX8);
 //===----------------------------------------------------------------------===//
 // BM_TupleOfI32Attrs
 //===----------------------------------------------------------------------===//
-
-struct TupleOfI32 {
-  int64_t i32_0;
-  int64_t i32_1;
-  int64_t i32_2;
-  int64_t i32_3;
-};
-
-XLA_FFI_REGISTER_STRUCT_ATTR_DECODING(TupleOfI32,
-                                      StructMember<int32_t>("i32_0"),
-                                      StructMember<int32_t>("i32_1"),
-                                      StructMember<int32_t>("i32_2"),
-                                      StructMember<int32_t>("i32_3"));
 
 void BM_TupleOfI32Attrs(benchmark::State& state) {
   CallFrameBuilder::AttributesBuilder attrs;

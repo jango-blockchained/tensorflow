@@ -112,6 +112,7 @@ cc_library(
     deps = [
         ":operator",
         ":types",
+        "//tensorflow/compiler/mlir/lite/quantization/lite/toco_legacy:quantize_weights",
         "//tensorflow/compiler/mlir/lite/schema:schema_conversion_utils",
         "//tensorflow/core:lib_proto_parsing",
         "//tensorflow/core/platform:status",
@@ -122,7 +123,6 @@ cc_library(
         "//tensorflow/lite/toco:model",
         "//tensorflow/lite/toco:toco_port",
         "//tensorflow/lite/toco:tooling_util",
-        "//tensorflow/lite/tools/optimize:quantize_weights",
         "//tensorflow/lite/tools/versioning",
         "@com_google_absl//absl/log",
         "@com_google_absl//absl/strings",
@@ -148,7 +148,7 @@ tf_cc_test(
         "@com_google_absl//absl/log",
         "@com_google_googletest//:gtest_main",
         "@flatbuffers",
-        "@local_tsl//tsl/protobuf:error_codes_proto_impl_cc",
+        "@local_xla//xla/tsl/protobuf:error_codes_proto_impl_cc",
     ],
 )
 

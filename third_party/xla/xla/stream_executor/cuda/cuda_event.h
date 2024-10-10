@@ -16,7 +16,11 @@ limitations under the License.
 #ifndef XLA_STREAM_EXECUTOR_CUDA_CUDA_EVENT_H_
 #define XLA_STREAM_EXECUTOR_CUDA_CUDA_EVENT_H_
 
+#include <cstdint>
+
+#include "absl/status/status.h"
 #include "xla/stream_executor/event.h"
+#include "xla/stream_executor/gpu/context.h"
 #include "xla/stream_executor/gpu/gpu_event.h"
 
 namespace stream_executor::gpu {
@@ -26,9 +30,11 @@ class GpuContext;
 // This class implements Event::PollForStatus for CUDA devices.
 class CudaEvent : public GpuEvent {
  public:
-  explicit CudaEvent(GpuContext *context) : GpuEvent(context) {}
+  explicit CudaEvent(Context *context) : GpuEvent(context) {}
 
   Event::Status PollForStatus() override;
+
+  absl::Status WaitForEventOnExternalStream(std::intptr_t stream) override;
 };
 
 }  // namespace stream_executor::gpu

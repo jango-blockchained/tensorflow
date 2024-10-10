@@ -3,11 +3,19 @@ load(
     "if_rocm_is_configured",
 )
 load(
+    "@local_config_sycl//sycl:build_defs.bzl",
+    "if_sycl_is_configured",
+)
+load(
     "@local_tsl//tsl/platform/default:cuda_build_defs.bzl",
     "if_cuda_is_configured",
 )
 load("//xla:xla.bzl", "xla_cc_test")
-load("//xla/tsl:tsl.bzl", "internal_visibility")
+load(
+    "//xla/tsl:tsl.bzl",
+    "if_google",
+    "internal_visibility",
+)
 
 package(
     # copybara:uncomment default_applicable_licenses = ["//tensorflow:license"],
@@ -32,6 +40,11 @@ cc_library(
         "gpu_backend_lib.h",
         "utils.h",
     ],
+    data = if_cuda_is_configured(
+        if_google(
+            ["@local_config_cuda//cuda:runtime_libdevice"],
+        ),
+    ),
     local_defines = if_cuda_is_configured([
         "GOOGLE_CUDA=1",
     ]) + if_rocm_is_configured(["TENSORFLOW_USE_ROCM=1"]),
@@ -44,6 +57,7 @@ cc_library(
         "//xla/service/llvm_ir:llvm_command_line_options",
         "//xla/service/llvm_ir:llvm_type_conversion_util",
         "//xla/stream_executor:device_description",
+        "//xla/stream_executor:semantic_version",
         "//xla/tsl/util:env_var",
         "@com_google_absl//absl/base",
         "@com_google_absl//absl/base:core_headers",
@@ -71,7 +85,7 @@ cc_library(
         "@llvm-project//llvm:Target",
         "@llvm-project//mlir:NVVMDialect",
         "@local_config_cuda//cuda:cuda_headers",
-        "@local_tsl//tsl/platform:cuda_libdevice_path",
+        "@local_tsl//tsl/platform:cuda_root_path",
         "@local_tsl//tsl/platform:env",
         "@local_tsl//tsl/platform:errors",
         "@local_tsl//tsl/platform:logging",
@@ -88,6 +102,8 @@ cc_library(
         "@local_config_rocm//rocm:rocm_headers",
         "@llvm-project//llvm:AMDGPUCodeGen",
         "@llvm-project//llvm:AMDGPUAsmParser",
+    ]) + if_sycl_is_configured([
+        "@spirv_llvm_translator//:spirv_llvm_translator",
     ]),
 )
 
@@ -103,6 +119,20 @@ xla_cc_test(
         "//xla/tests:xla_internal_test_main",
         "@llvm-project//llvm:Core",
         "@local_tsl//tsl/platform:path",
+        "@local_tsl//tsl/platform:test",
+    ],
+)
+
+xla_cc_test(
+    name = "gpu_backend_lib_test",
+    size = "small",
+    srcs = ["gpu_backend_lib_test.cc"],
+    deps = [
+        ":llvm_gpu_backend",
+        "//xla/stream_executor:device_description",
+        "//xla/stream_executor:semantic_version",
+        "//xla/tests:xla_internal_test_main",
+        "@com_google_absl//absl/strings",
         "@local_tsl//tsl/platform:test",
     ],
 )

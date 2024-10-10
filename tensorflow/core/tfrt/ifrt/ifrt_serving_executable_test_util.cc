@@ -68,7 +68,7 @@ IfrtServingExecutableTestHelper::IfrtServingExecutableTestHelper(
   work_queue_ = tfrt::CreateMultiThreadedWorkQueue(
       /*num_threads=*/4, /*num_blocking_threads=*/4);
 
-  auto device_mgr_or = ifrt_serving::CreateTfStaticDeviceMgr();
+  auto device_mgr_or = ifrt_serving::CreateTfDynamicDeviceMgr();
   TF_CHECK_OK(device_mgr_or.status());
   device_mgr_ = std::move(device_mgr_or.value());
 
@@ -87,7 +87,8 @@ IfrtServingExecutableTestHelper::MakeExecutable(int64_t program_id,
       thread_pool_.get(), &ifrt_loaded_variable_registry_,
       &ifrt_restore_tensor_registry_, work_queue_.get(), device_mgr_.get(),
       tensorflow::IdentityShapeRepresentationFn(), core_selector_.get(),
-      /*compilation_environment_proto=*/nullptr);
+      /*compilation_environment_proto=*/nullptr,
+      /*persistent_compilation_cache=*/nullptr);
   TF_CHECK_OK(executable_or.status());
   return std::move(executable_or.value());
 }

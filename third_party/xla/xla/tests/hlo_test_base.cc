@@ -15,30 +15,45 @@ limitations under the License.
 
 #include "xla/tests/hlo_test_base.h"
 
+#include <algorithm>
+#include <cstdint>
 #include <functional>
 #include <iterator>
 #include <memory>
-#include <set>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
 #include "absl/algorithm/container.h"
 #include "absl/log/check.h"
+#include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/strings/str_join.h"
+#include "absl/strings/str_replace.h"
+#include "absl/strings/string_view.h"
 #include "absl/types/span.h"
 #include "xla/debug_options_flags.h"
+#include "xla/error_spec.h"
 #include "xla/hlo/ir/hlo_instruction.h"
+#include "xla/hlo/ir/hlo_module_group.h"
 #include "xla/hlo/ir/hlo_opcode.h"
-#include "xla/layout_util.h"
+#include "xla/hlo/pass/hlo_pass_interface.h"
+#include "xla/hlo/utils/hlo_query.h"
+#include "xla/literal.h"
+#include "xla/service/backend.h"
+#include "xla/service/computation_placer.h"
+#include "xla/service/executable.h"
+#include "xla/service/hlo_module_config.h"
 #include "xla/service/hlo_module_util.h"
-#include "xla/service/hlo_parser.h"
+#include "xla/service/hlo_runner.h"
 #include "xla/service/hlo_runner_interface.h"
 #include "xla/service/hlo_runner_pjrt.h"
+#include "xla/service/hlo_verifier.h"
 #include "xla/service/platform_util.h"
 #include "xla/shape.h"
-#include "xla/shape_util.h"
 #include "xla/stream_executor/device_memory_allocator.h"
+#include "xla/stream_executor/platform.h"
 #include "xla/stream_executor/stream_executor_memory_allocator.h"
 #include "xla/tests/filecheck.h"
 #include "xla/tests/literal_test_util.h"
@@ -46,8 +61,11 @@ limitations under the License.
 #include "xla/tests/test_utils.h"
 #include "xla/tests/verified_hlo_module.h"
 #include "xla/tsl/lib/core/status_test_util.h"
-#include "xla/types.h"
+#include "xla/util.h"
+#include "tsl/platform/errors.h"
 #include "tsl/platform/logging.h"
+#include "tsl/platform/status.h"
+#include "tsl/platform/statusor.h"
 #include "tsl/platform/test.h"
 
 namespace xla {
@@ -144,6 +162,29 @@ HloTestBase::ParseAndReturnVerifiedModule(absl::string_view hlo_text,
                                           int64_t num_partitions) {
   return ParseAndReturnVerifiedModule(
       hlo_text, GetModuleConfigForTest(replica_count, num_partitions));
+}
+
+absl::Status HloTestBase::UpdateEntryComputationLayoutToMatchProgramLayout(
+    HloModule* module) {
+  for (auto* const computation : module->computations({})) {
+    if (computation->IsEntryComputation()) {
+      for (int64_t i = 0; i < computation->num_parameters(); ++i) {
+        const Shape& param_shape =
+            computation->parameter_instruction(i)->shape();
+        TF_RETURN_IF_ERROR(computation->parent()
+                               ->mutable_entry_computation_layout()
+                               ->mutable_parameter_layout(i)
+                               ->CopyLayoutFromShape(param_shape));
+      }
+
+      TF_RETURN_IF_ERROR(
+          computation->parent()
+              ->mutable_entry_computation_layout()
+              ->mutable_result_layout()
+              ->CopyLayoutFromShape(computation->root_instruction()->shape()));
+    }
+  }
+  return absl::OkStatus();
 }
 
 absl::StatusOr<std::unique_ptr<VerifiedHloModule>>
@@ -296,6 +337,21 @@ void HloTestBase::RunAndFilecheckHloModuleGroupRewrite(
   }
 }
 
+absl::StatusOr<std::unique_ptr<HloModule>> HloTestBase::RunAndCheckHloRewrite(
+    absl::string_view hlo_template, HloPassInterface&& hlo_pass,
+    bool expect_change, FixedMapping params) {
+  std::string hlo_string = absl::StrReplaceAll(hlo_template, params);
+  SCOPED_TRACE("Input HLO: " + hlo_string);
+  VLOG(7) << "Input HLO: " << hlo_string;
+  TF_ASSIGN_OR_RETURN(std::unique_ptr<HloModule> module,
+                      ParseAndReturnVerifiedModule(hlo_string));
+  TF_ASSIGN_OR_RETURN(bool changed, RunHloPass(hlo_pass, module.get()));
+  VLOG(7) << "Output HLO: "
+          << module->ToString(HloPrintOptions::ShortParsable());
+  EXPECT_EQ(changed, expect_change);
+  return module;
+}
+
 absl::StatusOr<Literal> HloTestBase::Execute(
     std::unique_ptr<HloModule> module, absl::Span<Literal* const> arguments,
     bool run_hlo_passes) {
@@ -417,7 +473,7 @@ absl::StatusOr<std::vector<Literal>> HloTestBase::ExecuteReplicated(
 absl::StatusOr<std::vector<Literal>> HloTestBase::ExecuteReplicated(
     std::unique_ptr<HloModule> module,
     std::vector<std::vector<Literal*>> arguments, int64_t num_replicas,
-    bool run_hlo_passes) {
+    bool run_hlo_passes, DeviceAssignment* device_assignment) {
   CHECK(num_replicas > 0 && "expect at least one replica");
   CHECK(num_replicas == arguments.size() &&
         "expect arguments for each replica");
@@ -433,8 +489,7 @@ absl::StatusOr<std::vector<Literal>> HloTestBase::ExecuteReplicated(
       [&](int64_t replica_idx, int64_t argument_idx) -> const Literal* {
         return arguments[replica_idx][argument_idx];
       },
-      num_replicas, /*run_hlo_passes=*/run_hlo_passes,
-      /*device_assignment=*/nullptr);
+      num_replicas, run_hlo_passes, device_assignment);
 }
 
 absl::StatusOr<std::unique_ptr<HloModule>> HloTestBase::MakeReferenceModule(
@@ -459,11 +514,14 @@ absl::StatusOr<::testing::AssertionResult> HloTestBase::RunAndCompareInternal(
     std::unique_ptr<HloModule> module,
     const absl::Span<Literal* const> arguments,
     const optional<ErrorSpec>& error, bool run_hlo_passes,
-    const std::function<void(HloModule*)>& reference_preprocessor) {
+    const std::function<void(HloModule*)>& reference_preprocessor,
+    const std::function<void(HloModule*)>& test_preprocessor) {
   TF_RETURN_IF_ERROR(hlo_verifier_->Run(module.get()).status());
   TF_ASSIGN_OR_RETURN(auto reference_module,
                       MakeReferenceModule(*module, reference_preprocessor));
-
+  if (test_preprocessor) {
+    test_preprocessor(module.get());
+  }
   // Execute on two backends.
   TF_ASSIGN_OR_RETURN(auto test, runner_->Execute(std::move(module), arguments,
                                                   run_hlo_passes));
@@ -496,10 +554,11 @@ absl::StatusOr<::testing::AssertionResult> HloTestBase::RunAndCompareInternal(
     std::unique_ptr<HloModule> module,
     const absl::Span<Literal* const> arguments,
     const optional<ErrorSpec>& error,
-    const std::function<void(HloModule*)>& reference_preprocessor) {
-  auto result =
-      RunAndCompareInternal(std::move(module), arguments, error,
-                            /*run_hlo_passes=*/false, reference_preprocessor);
+    const std::function<void(HloModule*)>& reference_preprocessor,
+    const std::function<void(HloModule*)>& test_preprocessor) {
+  auto result = RunAndCompareInternal(
+      std::move(module), arguments, error,
+      /*run_hlo_passes=*/false, reference_preprocessor, test_preprocessor);
   if (!result.ok()) {
     return ::testing::AssertionFailure() << result.status();
   }
@@ -528,15 +587,31 @@ absl::StatusOr<::testing::AssertionResult> HloTestBase::RunAndCompareInternal(
 
 ::testing::AssertionResult HloTestBase::RunAndCompareNoHloPasses(
     std::unique_ptr<HloModule> module, const optional<ErrorSpec>& error,
-    const std::function<void(HloModule*)>& reference_preprocessor) {
+    const std::function<void(HloModule*)>& reference_preprocessor,
+    const std::function<void(HloModule*)>& test_preprocessor) {
   const auto fake_arguments = MakeFakeArguments(module.get()).value();
   std::vector<Literal*> fake_argument_ptrs;
   absl::c_transform(
       fake_arguments, std::back_inserter(fake_argument_ptrs),
       [](const Literal& literal) { return const_cast<Literal*>(&literal); });
 
-  return RunAndCompareNoHloPasses(std::move(module), fake_argument_ptrs, error,
-                                  reference_preprocessor);
+  auto assertion_result =
+      RunAndCompareNoHloPasses(std::move(module), fake_argument_ptrs, error,
+                               reference_preprocessor, test_preprocessor);
+  if (!assertion_result) {
+    for (const auto& literal : fake_arguments) {
+      uint64_t total_elements = 1;
+      absl::c_for_each(literal.shape().dimensions(),
+                       [&](int64_t dim) { total_elements *= dim; });
+      if (total_elements > 1000) {
+        assertion_result << "argument literal is too large to print: "
+                         << literal.shape().ToString();
+        continue;
+      }
+      assertion_result << "argument literal: " << literal.ToString();
+    }
+  }
+  return assertion_result;
 }
 
 ::testing::AssertionResult HloTestBase::Run(std::unique_ptr<HloModule> module,
@@ -618,7 +693,8 @@ HloTestBase::RunAndCompareTwoModulesInternalReplicated(
   auto num_args = module_0->entry_computation()->num_parameters();
   if (num_args != options.arguments.size()) {
     return ::testing::AssertionFailure()
-           << "Mismatch in number of arguments passed while running replicated "
+           << "Mismatch in number of arguments passed while running "
+              "replicated "
               "hlo module. Expected: "
            << num_args << ", actual: " << options.arguments.size();
   }
@@ -987,7 +1063,8 @@ HloTestBase::RunAndCompareTwoModulesInternal(
 
 ::testing::AssertionResult HloTestBase::RunAndCompareNoHloPasses(
     string_view hlo_string, const std::optional<ErrorSpec>& error,
-    const std::function<void(HloModule*)>& reference_preprocessor) {
+    const std::function<void(HloModule*)>& reference_preprocessor,
+    const std::function<void(HloModule*)>& test_preprocessor) {
   auto module_or_status = ParseAndReturnVerifiedModule(hlo_string);
   if (!module_or_status.ok()) {
     return ::testing::AssertionFailure()
@@ -995,7 +1072,7 @@ HloTestBase::RunAndCompareTwoModulesInternal(
            << module_or_status.status().ToString();
   }
   return RunAndCompareNoHloPasses(std::move(module_or_status).value(), error,
-                                  reference_preprocessor);
+                                  reference_preprocessor, test_preprocessor);
 }
 
 ::testing::AssertionResult HloTestBase::RunAndCompareNoHloPassesFromFile(
@@ -1013,23 +1090,15 @@ HloTestBase::RunAndCompareTwoModulesInternal(
 
 HloComputation* HloTestBase::FindComputation(HloModule* module,
                                              absl::string_view name) {
-  auto computations = module->computations();
-  auto it = absl::c_find_if(
-      computations, [&](HloComputation* c) { return c->name() == name; });
-  if (it == computations.end()) {
-    return nullptr;
-  }
-  return *it;
+  return hlo_query::FindComputation(module, name);
 }
 
 HloInstruction* HloTestBase::FindInstruction(HloModule* module,
                                              absl::string_view name) {
-  for (const HloComputation* c : module->computations()) {
-    auto instructions = c->instructions();
-    auto it = absl::c_find_if(
-        instructions, [&](HloInstruction* i) { return i->name() == name; });
-    if (it != instructions.end()) {
-      return *it;
+  for (const HloComputation* computation : module->computations()) {
+    if (HloInstruction* instruction =
+            hlo_query::FindInstruction(computation, name)) {
+      return instruction;
     }
   }
   return nullptr;
@@ -1037,12 +1106,10 @@ HloInstruction* HloTestBase::FindInstruction(HloModule* module,
 
 HloInstruction* HloTestBase::FindInstruction(HloModule* module,
                                              HloOpcode opcode) {
-  for (const HloComputation* c : module->computations()) {
-    auto instructions = c->instructions();
-    auto it = absl::c_find_if(
-        instructions, [&](HloInstruction* i) { return i->opcode() == opcode; });
-    if (it != instructions.end()) {
-      return *it;
+  for (const HloComputation* computation : module->computations()) {
+    if (HloInstruction* instruction =
+            hlo_query::FindInstruction(computation, opcode)) {
+      return instruction;
     }
   }
   return nullptr;
@@ -1067,6 +1134,7 @@ se::DeviceMemoryAllocator* HloTestBase::GetAllocator() {
 }
 
 Backend& HloTestBase::backend() { return test_runner_.backend(); }
+const Backend& HloTestBase::backend() const { return test_runner_.backend(); }
 
 /* static */
 std::string HloTestBase::TestName() {

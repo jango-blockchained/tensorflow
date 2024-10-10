@@ -37,8 +37,8 @@ limitations under the License.
 #include "absl/types/span.h"
 #include "unsupported/Eigen/CXX11/Tensor"
 #include "mlir/IR/BuiltinOps.h"
-#include "xla/client/xla_computation.h"
 #include "xla/executable_run_options.h"
+#include "xla/hlo/builder/xla_computation.h"
 #include "xla/hlo/ir/hlo_module.h"
 #include "xla/layout.h"
 #include "xla/literal.h"
@@ -383,9 +383,6 @@ class TfrtCpuClient final : public PjRtClient {
   }
   absl::StatusOr<ChannelHandle> CreateDeviceToHostChannelHandle() override {
     return Unimplemented("CreateDeviceToHostChannelHandle not implemented.");
-  }
-  absl::StatusOr<ChannelHandle> CreateHostToDeviceChannelHandle() override {
-    return Unimplemented("CreateHostToDeviceChannelHandle not implemented.");
   }
 
   absl::Status Defragment() override {

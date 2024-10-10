@@ -518,7 +518,6 @@ cc_library(
         ":internal",
         # We reuse VariableInfo in TFRT's implementation of TpuExecuteOp.
         "//learning/brain/tfrt/tf_tpu:__pkg__",
-        "//learning/brain/tfrt/tpu_plugin:__pkg__",
         "//learning/brain/tfrt/tpu_common:__pkg__",
         "//tensorflow/core/common_runtime/next_pluggable_device:__pkg__",
     ],
@@ -539,9 +538,6 @@ cc_library(
         ":internal",
         # We reuse VariableInfo in TFRT's implementation of TpuExecuteOp.
         "//learning/brain/tfrt/tf_tpu:__pkg__",
-        "//learning/brain/tfrt/tpu_plugin:__pkg__",
-        "//learning/brain/tfrt/tpu_common:__pkg__",
-        "//tensorflow/core/common_runtime/next_pluggable_device:__pkg__",
     ],
     deps = [
         ":variable_info",
@@ -612,8 +608,6 @@ cc_library(
         # We reuse VariableInfo in TFRT's implementation of TpuExecuteOp.
         "//learning/brain/tfrt/tf_tpu:__pkg__",
         "//learning/brain/tfrt/tpu_plugin:__pkg__",
-        "//learning/brain/tfrt/tpu_common:__pkg__",
-        "//tensorflow/core/common_runtime/next_pluggable_device:__pkg__",
         "//tensorflow/core/tfrt/gpu/kernel:__pkg__",
     ],
     deps = [
@@ -726,7 +720,6 @@ cc_library(
     hdrs = ["xla_compile_util.h"],
     visibility = [
         ":internal",
-        "//tensorflow/core/common_runtime/next_pluggable_device:__pkg__",
         "//tensorflow/core/tfrt/gpu/kernel:__pkg__",
     ],
     deps = [
@@ -761,7 +754,6 @@ tf_cc_test(
 tf_proto_library(
     name = "xla_compilation_cache_proto",
     srcs = ["xla_compilation_cache.proto"],
-    cc_api_version = 2,
     protodeps = tf_additional_all_protos() + ["@local_xla//xla/service:hlo_proto"],
     visibility = ["//visibility:public"],
 )
@@ -770,10 +762,7 @@ cc_library(
     name = "device_compiler",
     hdrs = ["device_compiler.h"],
     copts = tf_copts(),
-    visibility = [
-        ":internal",
-        "//tensorflow/core/common_runtime/next_pluggable_device:__pkg__",
-    ],
+    visibility = [":internal"],
     deps = [
         ":device_compilation_cache",
         ":device_compilation_cluster_signature",
@@ -1118,7 +1107,6 @@ cc_library(
     ],
     visibility = [
         ":internal",
-        "//tensorflow/core/tfrt/utils:__pkg__",
         "//third_party/cloud_tpu/inference_converter:__pkg__",
         "//waymo/onboard/ml/chauffeur_net:__pkg__",
     ],
@@ -1157,7 +1145,10 @@ cc_library(
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/container:flat_hash_set",
         "@com_google_absl//absl/container:inlined_vector",
+        "@com_google_absl//absl/log",
+        "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/memory",
+        "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/types:optional",
@@ -1327,10 +1318,13 @@ tf_cc_test(
         "//tensorflow/core:session_options",
         "//tensorflow/core:test",
         "//tensorflow/core:testlib",
+        "//tensorflow/core/common_runtime:device_set",
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/memory",
+        "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/types:span",
+        "@com_google_googletest//:gtest",
         "@local_xla//xla:test",
     ],
 )
@@ -1508,7 +1502,6 @@ cc_library(
 tf_proto_library(
     name = "xla_activity_proto",
     srcs = ["xla_activity.proto"],
-    cc_api_version = 2,
     protodeps = tf_additional_all_protos(),
 )
 
@@ -1564,10 +1557,7 @@ cc_library(
     name = "device_compiler_client",
     srcs = ["device_compiler_client.cc"],
     hdrs = ["device_compiler_client.h"],
-    visibility = [
-        ":internal",
-        "//tensorflow/core/common_runtime/next_pluggable_device:__pkg__",
-    ],
+    visibility = [":internal"],
     deps = [
         "//tensorflow/compiler/tf2xla:xla_compiler",
         "//tensorflow/core/util:determinism",
@@ -1596,18 +1586,24 @@ cc_library(
 
 cc_library(
     name = "device_executable_persistor",
+    srcs = ["device_executable_persistor.cc"],
     hdrs = ["device_executable_persistor.h"],
     deps = [
+        ":device_compiler_client",
         ":xla_compilation_cache_proto_cc",
         ":xla_device_compiler_client",
         "//tensorflow/compiler/tf2xla:xla_compiler",
         "//tensorflow/core:core_cpu_base",
         "//tensorflow/core:framework",
         "//tensorflow/core:lib_headers_for_pybind",
+        "//tensorflow/core:portable_gif_internal",
         "//tensorflow/core/platform:path",
         "//tensorflow/core/platform:status",
         "//tensorflow/core/platform:statusor",
         "@com_google_absl//absl/log",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/strings",
+        "@local_tsl//tsl/platform:errors",
         "@local_tsl//tsl/platform:statusor",
         "@local_xla//xla:util",
         "@local_xla//xla/pjrt:pjrt_client",
@@ -1870,7 +1866,7 @@ tf_cc_test(
         "//tensorflow/core:test",
         "//tensorflow/core/platform:errors",
         "@com_google_googletest//:gtest_main",
-        "@local_tsl//tsl/protobuf:error_codes_proto_impl_cc",
+        "@local_xla//xla/tsl/protobuf:error_codes_proto_impl_cc",
     ],
 )
 

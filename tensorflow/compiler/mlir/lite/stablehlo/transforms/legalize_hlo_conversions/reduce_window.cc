@@ -18,15 +18,19 @@ limitations under the License.
 #include <optional>
 #include <string>
 #include <tuple>
+#include <vector>
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/Sequence.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Casting.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"  // from @llvm-project
 #include "mlir/IR/Attributes.h"  // from @llvm-project
 #include "mlir/IR/Builders.h"  // from @llvm-project
 #include "mlir/IR/BuiltinAttributes.h"  // from @llvm-project
+#include "mlir/IR/BuiltinTypeInterfaces.h"  // from @llvm-project
 #include "mlir/IR/IRMapping.h"  // from @llvm-project
+#include "mlir/IR/MLIRContext.h"  // from @llvm-project
 #include "mlir/IR/Matchers.h"  // from @llvm-project
 #include "mlir/IR/PatternMatch.h"  // from @llvm-project
 #include "mlir/Support/LLVM.h"  // from @llvm-project
@@ -99,6 +103,13 @@ bool IsCstFloatZero(Value val) {
   return matchPattern(val, m_Constant(&initial_value)) &&
          initial_value.getNumElements() == 1 &&
          initial_value.getValues<APFloat>()[0].isZero();
+}
+
+bool IsCstIntZero(Value val) {
+  DenseIntElementsAttr initial_value;
+  return matchPattern(val, m_Constant(&initial_value)) &&
+         initial_value.getNumElements() == 1 &&
+         initial_value.getValues<APInt>()[0].isZero();
 }
 
 llvm::SmallVector<int64_t> Permute(llvm::ArrayRef<int64_t> data,
@@ -294,6 +305,126 @@ LogicalResult RelayoutReduceWindow::matchAndRewrite(
 }
 
 //===------------------------------------------------------------------------===
+// mhlo.reduce_window -> tfl.cum_sum
+//===------------------------------------------------------------------------===
+
+class LegalizeCumSum : public OpConversionPattern<mhlo::ReduceWindowOp> {
+ public:
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult matchAndRewrite(
+      mhlo::ReduceWindowOp op, OpAdaptor adaptor,
+      ConversionPatternRewriter& rewriter) const final;
+};
+
+LogicalResult LegalizeCumSum::matchAndRewrite(
+    mhlo::ReduceWindowOp op, OpAdaptor adaptor,
+    ConversionPatternRewriter& rewriter) const {
+  //
+  // check singular params and trivial attrs
+  //=-----
+
+  auto opt_input_init = GetInputAndInitIfValid(op);
+  if (!opt_input_init.has_value()) {
+    return rewriter.notifyMatchFailure(op,
+                                       "Must have 1 input, init and result.");
+  }
+  auto [input, init] = opt_input_init.value();
+
+  if (failed(MatchBinaryReduceFunction<mhlo::AddOp>(op.getBody()))) {
+    return rewriter.notifyMatchFailure(op, "Requires scalar add in region.");
+  }
+
+  if (!IsCstFloatZero(init) && !IsCstIntZero(init)) {
+    return rewriter.notifyMatchFailure(op, "Requires 0 for init value.");
+  }
+
+  const ReduceWindowView view(op);
+
+  auto trivial = [](int64_t v) { return v == 1; };
+  const bool trivial_window_dilate =
+      llvm::all_of(view.WindowDilations(), trivial);
+  const bool trivial_base_dilate = llvm::all_of(view.BaseDilations(), trivial);
+  const bool trivial_stride = llvm::all_of(view.WindowStrides(), trivial);
+  if (!trivial_window_dilate || !trivial_stride || !trivial_base_dilate) {
+    return rewriter.notifyMatchFailure(
+        op, "Requires trivial strides and dilations attributes.");
+  }
+
+  //
+  // figure out the implicit axis of reduction
+  //=-----
+
+  auto input_type = llvm::cast<ShapedType>(input.getType());
+  if (view.WindowDims().size() != input_type.getRank()) {
+    return rewriter.notifyMatchFailure(op, "Splat window dims not supported.");
+  }
+  int64_t axis = -1;
+  for (auto [ind, val] : llvm::enumerate(view.WindowDims())) {
+    if (val == 1) {
+      continue;
+    }
+
+    if (axis != -1) {
+      return rewriter.notifyMatchFailure(op, "Multiple non 1 dimensions.");
+    }
+
+    if (val != input_type.getShape()[ind]) {
+      return rewriter.notifyMatchFailure(
+          op, "Axis dimension requires size be same as input shape's.");
+    }
+    axis = ind;
+  }
+
+  if (axis == -1) {
+    return rewriter.notifyMatchFailure(op, "Could not identify axis.");
+  }
+
+  const int64_t axis_size = input_type.getShape()[axis];
+
+  //
+  // validate padding is [N-1, 0] on axis and zero elsewhere
+  //=-----
+
+  for (const auto& [ind, dim_pad] : llvm::enumerate(view.Paddings())) {
+    if (dim_pad.Hi() != 0) {
+      return rewriter.notifyMatchFailure(op, "Has non trivial high padding.");
+    }
+
+    if (ind != axis) {
+      if (!dim_pad.Trivial()) {
+        return rewriter.notifyMatchFailure(
+            op, "Has non trivial padding on non axis dim.");
+      }
+    } else {
+      if (dim_pad.Lo() != axis_size - 1) {
+        return rewriter.notifyMatchFailure(
+            op, "Requires low padding on axis dim to be N - 1.");
+      }
+    }
+  }
+
+  //
+  // build axis constant and tfl op
+  //=-----
+
+  auto axis_cst_attr = DenseIntElementsAttr::get(
+      RankedTensorType::get({}, rewriter.getI32Type()),
+      static_cast<int32_t>(axis));
+  auto axis_cst =
+      rewriter.create<arith::ConstantOp>(op->getLoc(), axis_cst_attr);
+
+  auto tfl_exclusive_attr = rewriter.getBoolAttr(false);
+  auto tfl_reverse_attr = rewriter.getBoolAttr(false);
+
+  rewriter.replaceOpWithNewOp<TFL::CumsumOp>(op, op->getResultTypes()[0], input,
+                                             axis_cst, tfl_exclusive_attr,
+                                             tfl_reverse_attr);
+
+  return success();
+}
+
+//===------------------------------------------------------------------------===
 // mhlo.reduce_window -> tfl.max_pool
 //===------------------------------------------------------------------------===
 
@@ -315,7 +446,52 @@ class LegalizeMaxPool : public OpConversionPattern<mhlo::ReduceWindowOp> {
   LogicalResult matchAndRewrite(
       mhlo::ReduceWindowOp op, OpAdaptor adaptor,
       ConversionPatternRewriter& rewriter) const final;
+
+ private:
+  TFL::PadV2Op BuildExplicitPadOp(mhlo::ReduceWindowOp op, const Layout& layout,
+                                  const ShapedType& input_type,
+                                  const ShapedType& output_type, Value input,
+                                  Value init, const ReduceWindowView& view,
+                                  PatternRewriter& rewriter) const;
 };
+
+TFL::PadV2Op LegalizeMaxPool::BuildExplicitPadOp(
+    mhlo::ReduceWindowOp op, const Layout& layout, const ShapedType& input_type,
+    const ShapedType& output_type, Value input, Value init,
+    const ReduceWindowView& view, PatternRewriter& rewriter) const {
+  // The following works for rank=4 (see IsRankSupported()).
+  std::vector<int64_t> shape = {layout.Rank(), layout.NumSpatials()};
+
+  // Create attribute: padding_values
+  // For an NHWC with this padding: [[a, b], [c, d], [e, f], [g, h]]
+  // we want [a, b, c, d, e, f, g, h]
+  llvm::SmallVector<int64_t, 8> padding_values;
+  for (auto& padding : view.Paddings()) {
+    padding_values.push_back(padding.Lo());
+    padding_values.push_back(padding.Hi());
+  }
+
+  auto padding_dense_attr = mlir::DenseElementsAttr::get(
+      mlir::RankedTensorType::get(shape, rewriter.getIntegerType(64)),
+      llvm::ArrayRef<int64_t>(padding_values));
+
+  auto padding_values_op =
+      rewriter.create<arith::ConstantOp>(op.getLoc(), padding_dense_attr);
+
+  llvm::SmallVector<int64_t, 4> pad_output_shape_vector;
+  pad_output_shape_vector.push_back(input_type.getDimSize(0));
+  pad_output_shape_vector.push_back(input_type.getDimSize(1) +
+                                    view.Paddings()[1].Lo() +
+                                    view.Paddings()[1].Hi());
+  pad_output_shape_vector.push_back(input_type.getDimSize(2) +
+                                    view.Paddings()[2].Lo() +
+                                    view.Paddings()[2].Hi());
+  pad_output_shape_vector.push_back(input_type.getDimSize(3));
+  auto pad_output_type = mlir::RankedTensorType::get(
+      pad_output_shape_vector, output_type.getElementType());
+  return rewriter.create<TFL::PadV2Op>(op.getLoc(), pad_output_type, input,
+                                       padding_values_op, init);
+}
 
 LogicalResult LegalizeMaxPool::matchAndRewrite(
     mhlo::ReduceWindowOp op, OpAdaptor adaptor,
@@ -365,15 +541,23 @@ LogicalResult LegalizeMaxPool::matchAndRewrite(
   auto opt_tfl_padding =
       GetTFLPadding(view.Paddings(), view.WindowStrides(),
                     input_type.getShape(), view.WindowDims());
-  if (!opt_tfl_padding.has_value()) {
-    return rewriter.notifyMatchFailure(op, "Padding not SAME or VALID.");
+
+  Value max_pool_input;
+  std::string tfl_padding_attr;
+  if (opt_tfl_padding.has_value()) {
+    max_pool_input = input;
+    tfl_padding_attr = opt_tfl_padding.value();
+  } else {
+    max_pool_input = BuildExplicitPadOp(op, layout, input_type, type, input,
+                                        init, view, rewriter);
+    tfl_padding_attr = "VALID";
   }
-  const auto& tfl_padding = opt_tfl_padding.value();
 
   auto [fh, fw, sh, sw, p, faf] =
-      BuildTFLPoolAttrs(rewriter, view, tfl_padding);
-  rewriter.replaceOpWithNewOp<TFL::MaxPool2DOp>(op, type, input, p, sw, sh, fw,
-                                                fh, faf);
+      BuildTFLPoolAttrs(rewriter, view, tfl_padding_attr);
+
+  rewriter.replaceOpWithNewOp<TFL::MaxPool2DOp>(op, type, max_pool_input, p, sw,
+                                                sh, fw, fh, faf);
 
   return success();
 }
@@ -419,6 +603,8 @@ Value RecursivelyWalkUp(Value op) {
 class LegalizeAvgPool : public OpConversionPattern<mhlo::DivOp> {
  public:
   using OpConversionPattern::OpConversionPattern;
+  explicit LegalizeAvgPool(MLIRContext* context)
+      : OpConversionPattern<mhlo::DivOp>(context, 10) {}
   LogicalResult matchAndRewrite(
       mhlo::DivOp op, OpAdaptor adaptor,
       ConversionPatternRewriter& rewriter) const final;
@@ -601,7 +787,7 @@ LogicalResult LegalizeAvgPool::matchAndRewrite(
 void PopulateLegalizeReduceWindowPatterns(MLIRContext* ctx,
                                           RewritePatternSet& patterns,
                                           ConversionTarget& target) {
-  patterns.add<LegalizeAvgPool, LegalizeMaxPool>(ctx);
+  patterns.add<LegalizeAvgPool, LegalizeMaxPool, LegalizeCumSum>(ctx);
   target.addDynamicallyLegalOp<mhlo::ReduceWindowOp>(IsReduceWindowLegal);
   target.addDynamicallyLegalOp<mhlo::DivOp>(IsDivideLegal);
 }

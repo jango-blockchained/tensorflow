@@ -25,11 +25,11 @@ limitations under the License.
 #include "mlir/IR/OwningOpRef.h"
 #include "xla/pjrt/pjrt_executable.h"
 #include "xla/python/ifrt/array.h"
-#include "xla/python/ifrt/device.h"
+#include "xla/python/ifrt/device_list.h"
 #include "xla/python/ifrt/dtype.h"
 #include "xla/python/ifrt/executable.h"
 #include "xla/python/ifrt/hlo/hlo_program.h"
-#include "xla/python/ifrt/ir/compiler.h"
+#include "xla/python/ifrt/ir/ifrt_ir_program.h"
 #include "xla/python/ifrt/ir/sharding_param.h"
 #include "xla/python/ifrt/ir/tests/executable_impl_test_base.h"
 #include "xla/python/ifrt/shape.h"
@@ -72,7 +72,7 @@ module {
   )";
   TF_ASSERT_OK_AND_ASSIGN(mlir::OwningOpRef<mlir::ModuleOp> mlir_module,
                           LoadFromSource(source));
-  TF_ASSERT_OK_AND_ASSIGN(DeviceList devices, PickDevices(2));
+  TF_ASSERT_OK_AND_ASSIGN(tsl::RCReference<DeviceList> devices, PickDevices(2));
   TF_ASSERT_OK_AND_ASSIGN(
       std::unique_ptr<LoadedExecutable> loaded_exec,
       client_->GetDefaultCompiler()->Compile(
@@ -87,9 +87,11 @@ module {
                   xla::ifrt::DType(xla::ifrt::DType::kS32),
                   xla::ifrt::ShardingParam({2, 1}, {{0}, {2}}), devices));
 
+  ExecuteOptions options;
+  options.fill_status = true;
   TF_ASSERT_OK_AND_ASSIGN(
       LoadedExecutable::ExecuteResult result,
-      loaded_exec->Execute(absl::MakeSpan(&input, 1), /*options=*/{},
+      loaded_exec->Execute(absl::MakeSpan(&input, 1), options,
                            /*devices=*/std::nullopt));
 
   TF_ASSERT_OK(result.status.Await());
@@ -112,7 +114,7 @@ module {
   )";
   TF_ASSERT_OK_AND_ASSIGN(mlir::OwningOpRef<mlir::ModuleOp> mlir_module,
                           LoadFromSource(source));
-  TF_ASSERT_OK_AND_ASSIGN(DeviceList devices, PickDevices(2));
+  TF_ASSERT_OK_AND_ASSIGN(tsl::RCReference<DeviceList> devices, PickDevices(2));
   TF_ASSERT_OK_AND_ASSIGN(
       std::unique_ptr<LoadedExecutable> loaded_exec,
       client_->GetDefaultCompiler()->Compile(
@@ -120,22 +122,26 @@ module {
           std::make_unique<IfrtIRCompileOptions>(GetDeviceIds(devices))));
 
   std::vector<int> data = {1, 2};
-  TF_ASSERT_OK_AND_ASSIGN(tsl::RCReference<Array> input,
-                          CreateArray({data.data()}, xla::ifrt::Shape({2}),
-                                      xla::ifrt::DType(xla::ifrt::DType::kS32),
-                                      xla::ifrt::ShardingParam({1}, {{0}, {1}}),
-                                      DeviceList({devices[0]})));
+  TF_ASSERT_OK_AND_ASSIGN(
+      tsl::RCReference<Array> input,
+      CreateArray({data.data()}, xla::ifrt::Shape({2}),
+                  xla::ifrt::DType(xla::ifrt::DType::kS32),
+                  xla::ifrt::ShardingParam({1}, {{0}, {1}}),
+                  BasicDeviceList::Create({devices->devices()[0]})));
 
+  ExecuteOptions options;
+  options.fill_status = true;
   TF_ASSERT_OK_AND_ASSIGN(
       LoadedExecutable::ExecuteResult result,
-      loaded_exec->Execute(absl::MakeSpan(&input, 1), /*options=*/{},
+      loaded_exec->Execute(absl::MakeSpan(&input, 1), options,
                            /*devices=*/std::nullopt));
 
   TF_ASSERT_OK(result.status.Await());
   ASSERT_EQ(result.outputs.size(), 1);
   ASSERT_NO_FATAL_FAILURE(AssertPerShardData<int>(
       result.outputs[0], xla::ifrt::DType(xla::ifrt::DType::kS32),
-      xla::ifrt::Shape({2}), {{1, 2}}, DeviceList({devices[1]})));
+      xla::ifrt::Shape({2}), {{1, 2}},
+      BasicDeviceList::Create({devices->devices()[1]})));
 }
 
 TEST_F(IfrtIrExecutableImplTest, Reshard) {
@@ -151,7 +157,7 @@ module {
   )";
   TF_ASSERT_OK_AND_ASSIGN(mlir::OwningOpRef<mlir::ModuleOp> mlir_module,
                           LoadFromSource(source));
-  TF_ASSERT_OK_AND_ASSIGN(DeviceList devices, PickDevices(2));
+  TF_ASSERT_OK_AND_ASSIGN(tsl::RCReference<DeviceList> devices, PickDevices(2));
   TF_ASSERT_OK_AND_ASSIGN(
       std::unique_ptr<LoadedExecutable> loaded_exec,
       client_->GetDefaultCompiler()->Compile(
@@ -159,15 +165,18 @@ module {
           std::make_unique<IfrtIRCompileOptions>(GetDeviceIds(devices))));
 
   std::vector<int> data = {1, 2};
-  TF_ASSERT_OK_AND_ASSIGN(tsl::RCReference<Array> input,
-                          CreateArray({data.data()}, xla::ifrt::Shape({2}),
-                                      xla::ifrt::DType(xla::ifrt::DType::kS32),
-                                      xla::ifrt::ShardingParam({1}, {{0}, {1}}),
-                                      DeviceList({devices[0]})));
+  TF_ASSERT_OK_AND_ASSIGN(
+      tsl::RCReference<Array> input,
+      CreateArray({data.data()}, xla::ifrt::Shape({2}),
+                  xla::ifrt::DType(xla::ifrt::DType::kS32),
+                  xla::ifrt::ShardingParam({1}, {{0}, {1}}),
+                  BasicDeviceList::Create({devices->devices()[0]})));
 
+  ExecuteOptions options;
+  options.fill_status = true;
   TF_ASSERT_OK_AND_ASSIGN(
       LoadedExecutable::ExecuteResult result,
-      loaded_exec->Execute(absl::MakeSpan(&input, 1), /*options=*/{},
+      loaded_exec->Execute(absl::MakeSpan(&input, 1), options,
                            /*devices=*/std::nullopt));
 
   TF_ASSERT_OK(result.status.Await());
@@ -195,16 +204,18 @@ module {
   )";
   TF_ASSERT_OK_AND_ASSIGN(mlir::OwningOpRef<mlir::ModuleOp> mlir_module,
                           LoadFromSource(source));
-  TF_ASSERT_OK_AND_ASSIGN(DeviceList devices, PickDevices(2));
+  TF_ASSERT_OK_AND_ASSIGN(tsl::RCReference<DeviceList> devices, PickDevices(2));
   TF_ASSERT_OK_AND_ASSIGN(
       std::unique_ptr<LoadedExecutable> loaded_exec,
       client_->GetDefaultCompiler()->Compile(
           std::make_unique<IfrtIRProgram>(*mlir_module),
           std::make_unique<IfrtIRCompileOptions>(GetDeviceIds(devices))));
 
-  TF_ASSERT_OK_AND_ASSIGN(LoadedExecutable::ExecuteResult result,
-                          loaded_exec->Execute(/*args=*/{}, /*options=*/{},
-                                               /*devices=*/std::nullopt));
+  ExecuteOptions options;
+  options.fill_status = true;
+  TF_ASSERT_OK_AND_ASSIGN(
+      LoadedExecutable::ExecuteResult result,
+      loaded_exec->Execute(/*args=*/{}, options, /*devices=*/std::nullopt));
 
   TF_ASSERT_OK(result.status.Await());
   ASSERT_EQ(result.outputs.size(), 1);
@@ -232,7 +243,7 @@ module {
   )";
   TF_ASSERT_OK_AND_ASSIGN(mlir::OwningOpRef<mlir::ModuleOp> mlir_module,
                           LoadFromSource(source));
-  TF_ASSERT_OK_AND_ASSIGN(DeviceList devices, PickDevices(2));
+  TF_ASSERT_OK_AND_ASSIGN(tsl::RCReference<DeviceList> devices, PickDevices(2));
   TF_ASSERT_OK_AND_ASSIGN(
       std::unique_ptr<LoadedExecutable> loaded_exec,
       client_->GetDefaultCompiler()->Compile(
@@ -247,9 +258,11 @@ module {
                   xla::ifrt::DType(xla::ifrt::DType::kS32),
                   xla::ifrt::ShardingParam({2, 1}, {{0}, {2}}), devices));
 
+  ExecuteOptions options;
+  options.fill_status = true;
   TF_ASSERT_OK_AND_ASSIGN(
       LoadedExecutable::ExecuteResult result,
-      loaded_exec->Execute(absl::MakeSpan(&input, 1), /*options=*/{},
+      loaded_exec->Execute(absl::MakeSpan(&input, 1), options,
                            /*devices=*/std::nullopt));
 
   TF_ASSERT_OK(result.status.Await());
@@ -277,7 +290,7 @@ module {
   )";
   TF_ASSERT_OK_AND_ASSIGN(mlir::OwningOpRef<mlir::ModuleOp> mlir_module,
                           LoadFromSource(source));
-  TF_ASSERT_OK_AND_ASSIGN(DeviceList devices, PickDevices(2));
+  TF_ASSERT_OK_AND_ASSIGN(tsl::RCReference<DeviceList> devices, PickDevices(2));
   TF_ASSERT_OK_AND_ASSIGN(
       std::unique_ptr<LoadedExecutable> loaded_exec,
       client_->GetDefaultCompiler()->Compile(
@@ -292,9 +305,11 @@ module {
                   xla::ifrt::DType(xla::ifrt::DType::kS32),
                   xla::ifrt::ShardingParam({2, 1}, {{0}, {2}}), devices));
 
+  ExecuteOptions options;
+  options.fill_status = true;
   TF_ASSERT_OK_AND_ASSIGN(
       LoadedExecutable::ExecuteResult result,
-      loaded_exec->Execute(absl::MakeSpan(&input, 1), /*options=*/{},
+      loaded_exec->Execute(absl::MakeSpan(&input, 1), options,
                            /*devices=*/std::nullopt));
   TF_ASSERT_OK(result.status.Await());
   ASSERT_EQ(result.outputs.size(), 1);
@@ -311,7 +326,7 @@ module {
 }
 
 TEST_F(IfrtIrExecutableImplTest, LoadedExecBinding) {
-  TF_ASSERT_OK_AND_ASSIGN(DeviceList devices, PickDevices(2));
+  TF_ASSERT_OK_AND_ASSIGN(tsl::RCReference<DeviceList> devices, PickDevices(2));
   std::string mhlo_source = R"(
 module {
   func.func @main(
@@ -373,9 +388,11 @@ module {
                   xla::ifrt::DType(xla::ifrt::DType::kS32),
                   xla::ifrt::ShardingParam({2, 1}, {{0}, {2}}), devices));
 
+  ExecuteOptions execute_options;
+  execute_options.fill_status = true;
   TF_ASSERT_OK_AND_ASSIGN(
       LoadedExecutable::ExecuteResult result,
-      loaded_exec->Execute(absl::MakeSpan(&input, 1), /*options=*/{},
+      loaded_exec->Execute(absl::MakeSpan(&input, 1), execute_options,
                            /*devices=*/std::nullopt));
 
   TF_ASSERT_OK(result.status.Await());

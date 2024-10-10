@@ -1,6 +1,10 @@
 # Contains graph rewrites for TPU runtimes and optimizations.
 
 load(
+    "//tensorflow:tensorflow.bzl",
+    "tf_cc_test",
+)
+load(
     "//tensorflow/core/platform:build_config_root.bzl",
     "if_static",
 )
@@ -72,6 +76,7 @@ cc_library(
         "//tensorflow/core/platform:strcat",
         "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/status",
+        "@com_google_absl//absl/strings",
         "@local_tsl//tsl/platform:errors",
         "@local_xla//xla:status_macros",
     ],
@@ -119,6 +124,7 @@ cc_library(
         "//tensorflow/core:session_options",
         "//tensorflow/core/common_runtime:function_body",
         "//tensorflow/core/common_runtime:function_utils",
+        "//tensorflow/core/config:flag_defs",
         "//tensorflow/core/tpu:tpu_compile_interface",
         "//tensorflow/core/tpu:tpu_defs",
         "@com_google_absl//absl/container:flat_hash_map",
@@ -131,6 +137,7 @@ cc_library(
         "@local_tsl//tsl/platform:logging",
         "@local_tsl//tsl/platform:status",
         "@local_xla//xla:status_macros",
+        "@local_xla//xla/tsl/util:env_var",
     ] + if_static(
         [
             "//tensorflow/core/common_runtime:function",
@@ -138,6 +145,27 @@ cc_library(
         ],
         [],
     ),
+)
+
+tf_cc_test(
+    name = "encapsulate_tpu_computations_pass_test",
+    srcs = ["encapsulate_tpu_computations_pass_test.cc"],
+    deps = [
+        ":encapsulate_tpu_computations_pass",
+        "//tensorflow/cc:cc_ops",
+        "//tensorflow/cc:cc_ops_internal",
+        "//tensorflow/core:framework",
+        "//tensorflow/core:framework_internal",
+        "//tensorflow/core:graph",
+        "//tensorflow/core:lib_internal",
+        "//tensorflow/core:ops",
+        "//tensorflow/core:test",
+        "//tensorflow/core:test_main",
+        "//tensorflow/core:testlib",
+        "//tensorflow/core/common_runtime:optimization_registry",
+        "//tensorflow/core/config:flag_defs",
+        "//tensorflow/core/framework:types_proto_cc",
+    ],
 )
 
 cc_library(
@@ -200,7 +228,7 @@ cc_library(
         "@local_xla//xla:status_macros",
         "@local_xla//xla:xla_data_proto_cc",
         "@local_xla//xla:xla_proto_cc",
-        "@local_xla//xla/client:sharding_builder",
+        "@local_xla//xla/hlo/builder:sharding_builder",
         "@local_xla//xla/service:computation_placer",
         "@local_xla//xla/stream_executor/tpu:c_api_decl",
         "@local_xla//xla/stream_executor/tpu:tpu_api",

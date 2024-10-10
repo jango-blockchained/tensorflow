@@ -91,7 +91,7 @@ ttn::WGMMAEltType getMmaOperandType(Value, bool);
 namespace xla::gpu {
 namespace {
 
-#define GEN_PASS_DEF_SPARSEADDDOTENCODINGPASS
+#define GEN_PASS_DEF_SPARSEADDENCODINGPASS
 #define GEN_PASS_DEF_SPARSEBLOCKEDTOMMAPASS
 #define GEN_PASS_DEF_SPARSEDOTOPTOLLVMPASS
 #define GEN_PASS_DEF_SPARSELOCALLOADTOLLVMPASS
@@ -99,8 +99,18 @@ namespace {
 #define GEN_PASS_DEF_SPARSEWGMMAOPTOLLVMPASS
 #include "xla/service/gpu/fusions/triton/passes.h.inc"
 
-// Add sparse encoding for all the arguments of a SparseDotOp.
-struct AddSparseEncoding
+constexpr int kThreadsPerWarp = 32;
+// Each 16x16 original sparse matrix tile requires 16 metadata values of
+// 16-bit size, where the first thread (T0) in each 4-thread group holds two
+// such values in a register (32-bit).
+// https://docs.nvidia.com/cuda/parallel-thread-execution/index.html#sparse-matrix-storage
+constexpr int kTileSize = 16;
+constexpr int kMetaElementsBitSize = 2;
+// Metadata elements are packed into 16-bits values.
+constexpr int kMetaElementsPerPackedValue = 16 / kMetaElementsBitSize;
+constexpr int kColumnsPerCtaTile = kTileSize / kMetaElementsPerPackedValue;
+
+struct SparseAddEncoding
     : public OpConversionPattern<triton::gpu::SparseDotOp> {
   using OpConversionPattern<triton::gpu::SparseDotOp>::OpConversionPattern;
 
@@ -193,16 +203,16 @@ struct AddSparseEncoding
   }
 };
 
-struct SparseAddDotEncodingPass
-    : public impl::SparseAddDotEncodingPassBase<SparseAddDotEncodingPass> {
-  using impl::SparseAddDotEncodingPassBase<
-      SparseAddDotEncodingPass>::SparseAddDotEncodingPassBase;
+struct SparseAddEncodingPass
+    : public impl::SparseAddEncodingPassBase<SparseAddEncodingPass> {
+  using impl::SparseAddEncodingPassBase<
+      SparseAddEncodingPass>::SparseAddEncodingPassBase;
 
   void runOnOperation() override {
     MLIRContext *context = &getContext();
     TritonGPUTypeConverter type_converter(context, num_warps_,
                                           threads_per_warp_, num_ctas_);
-    auto pattern = std::make_unique<AddSparseEncoding>(type_converter, context);
+    auto pattern = std::make_unique<SparseAddEncoding>(type_converter, context);
     RewritePatternSet patterns(context, std::move(pattern));
     TritonGPUConversionTarget target(*context, type_converter);
     target.addDynamicallyLegalOp<triton::gpu::SparseDotOp>(
@@ -215,8 +225,6 @@ struct SparseAddDotEncodingPass
   }
 };
 
-// Add convert layouts to and from MMA before and after SparseDotOp. In MMAV3,
-// shared memory allocations will be used for A and B operands.
 class SparseBlockedToMMA : public RewritePattern {
   using ConvertLayoutOp = triton::gpu::ConvertLayoutOp;
   using SparseDotOp = triton::gpu::SparseDotOp;
@@ -336,6 +344,42 @@ struct SparseBlockedToMMAPass
   }
 };
 
+struct SparseRemoveLayoutConversionPass
+    : public impl::SparseRemoveLayoutConversionPassBase<
+          SparseRemoveLayoutConversionPass> {
+  void runOnOperation() override {
+    getOperation().walk([&](triton::gpu::ConvertLayoutOp op) {
+      ImplicitLocOpBuilder builder(op.getLoc(), op);
+      // Skip if the source is already in shared memory.
+      auto src_encoding =
+          cast<RankedTensorType>(op.getSrc().getType()).getEncoding();
+      if (isa<triton::gpu::SharedEncodingAttr>(src_encoding)) {
+        return;
+      }
+      auto dst_type = cast<RankedTensorType>(op.getType());
+      // Skip if the destination is not a sparse dot meta.
+      if (!isa<triton::gpu::SparseDotMetaEncodingAttr>(
+              dst_type.getEncoding())) {
+        return;
+      }
+
+      auto shared_layout = builder.getAttr<triton::gpu::SharedEncodingAttr>(
+          // Packing metadata elements together. No swizzling.
+          /*vec=*/kMetaElementsPerPackedValue, /*perPhase=*/1, /*maxPhase=*/1,
+          triton::gpu::getOrder(src_encoding),
+          triton::gpu::getCTALayout(src_encoding));
+      auto mem_type = triton::MemDescType::get(
+          dst_type.getShape(), dst_type.getElementType(), shared_layout,
+          builder.getAttr<triton::gpu::SharedMemorySpaceAttr>());
+      Value alloc =
+          builder.create<triton::gpu::LocalAllocOp>(mem_type, op.getSrc());
+      Value convert = builder.create<triton::gpu::LocalLoadOp>(dst_type, alloc);
+      op.replaceAllUsesWith(convert);
+      op.erase();
+    });
+  }
+};
+
 class SparseLocalLoadToLLVM
     : public ConvertOpToLLVMPattern<triton::gpu::LocalLoadOp> {
  public:
@@ -359,17 +403,6 @@ class SparseLocalLoadToLLVM
   LogicalResult lowerSharedToSparseMeta(
       triton::gpu::LocalLoadOp op, triton::gpu::LocalLoadOpAdaptor adaptor,
       ConversionPatternRewriter &rewriter) const {
-    constexpr int kThreadsPerWarp = 32;
-    // Each 16x16 original sparse matrix tile requires 16 metadata values of
-    // 16-bit size, where the first thread (T0) in each 4-thread group holds two
-    // such values in a register (32-bit).
-    // https://docs.nvidia.com/cuda/parallel-thread-execution/index.html#sparse-matrix-storage
-    constexpr int kTileSize = 16;
-    constexpr int kMetaElementsBitSize = 2;
-    // Metadata elements are packed into 16-bits values.
-    constexpr int kMetaElementsPerPackedValue = 16 / kMetaElementsBitSize;
-    constexpr int kColumnsPerCtaTile = kTileSize / kMetaElementsPerPackedValue;
-
     auto loc = op.getLoc();
     auto load_sparse_encoding = cast<triton::gpu::SparseDotMetaEncodingAttr>(
         cast<RankedTensorType>(op.getResult().getType()).getEncoding());
@@ -451,38 +484,6 @@ class SparseLocalLoadToLLVM
   }
 };
 
-struct SparseRemoveLayoutConversionPass
-    : public impl::SparseRemoveLayoutConversionPassBase<
-          SparseRemoveLayoutConversionPass> {
-  void runOnOperation() override {
-    getOperation().walk([&](triton::gpu::ConvertLayoutOp op) {
-      ImplicitLocOpBuilder builder(op.getLoc(), op);
-      auto srcEncoding =
-          cast<RankedTensorType>(op.getSrc().getType()).getEncoding();
-      if (isa<triton::gpu::SharedEncodingAttr>(srcEncoding)) {
-        return;
-      }
-      auto dstType = cast<RankedTensorType>(op.getType());
-      if (!isa<triton::gpu::SparseDotMetaEncodingAttr>(dstType.getEncoding())) {
-        return;
-      }
-
-      auto ctaLayout = triton::gpu::getCTALayout(srcEncoding);
-      auto sharedLayout = builder.getAttr<triton::gpu::SharedEncodingAttr>(
-          8, 1, 1, triton::gpu::getOrder(srcEncoding), ctaLayout);
-      auto sharedMemorySpace =
-          builder.getAttr<triton::gpu::SharedMemorySpaceAttr>();
-      auto memType =
-          triton::MemDescType::get(dstType.getShape(), dstType.getElementType(),
-                                   sharedLayout, sharedMemorySpace);
-      Value alloc =
-          builder.create<triton::gpu::LocalAllocOp>(memType, op.getSrc());
-      Value convert = builder.create<triton::gpu::LocalLoadOp>(dstType, alloc);
-      op.replaceAllUsesWith(convert);
-      op.erase();
-    });
-  }
-};
 
 bool IsLocalLoadWithSparseEncoding(Operation *op) {
   auto local_load = mlir::dyn_cast<triton::gpu::LocalLoadOp>(op);
@@ -501,7 +502,7 @@ struct SparseLocalLoadToLLVMPass
     // Allocate shared memory and set barrier
     // This is also done in the TritonGPUToLLVMPass but we need to do it before
     // we write the local load op to LLVM to have barriers in the right place.
-    // See b/351986109.
+    // See b/358375493.
     ModuleAllocation allocation(getOperation());
     ModuleMembarAnalysis membar_pass(&allocation);
     membar_pass.run();
@@ -656,7 +657,6 @@ LogicalResult convertSparseMMA(triton::gpu::SparseDotOp op,
 
 // ----- Hopper implementation.
 
-constexpr int kThreadsPerWarp = 32;
 constexpr int kWarpsInGroup = 4;
 constexpr int kMmaAccumulatorCount = 2;
 constexpr int kMmaLineSize = 128;
@@ -867,6 +867,8 @@ struct SparseDotOpToLLVMPass
     TritonGPUToLLVMTypeConverter typeConverter(context, option);
     RewritePatternSet patterns(context);
     patterns.add<SparseDotOpConversion>(typeConverter);
+    // TODO(b/358375493): Remove this once TritonGPUToLLVMTypeConverter is
+    // splitted into smaller passes.
     populateGpuToNVVMConversionPatterns(typeConverter, patterns);
     if (failed(applyPartialConversion(getOperation(), target,
                                       std::move(patterns)))) {
@@ -976,14 +978,14 @@ struct SparseWGMMAOpToLLVMPass
 
 }  // namespace
 
-std::unique_ptr<Pass> CreateSparseAddDotEncodingPass(int32_t num_warps,
-                                                     int32_t threads_per_warp,
-                                                     int32_t num_ctas) {
-  SparseAddDotEncodingPassOptions options;
+std::unique_ptr<Pass> CreateSparseAddEncodingPass(int32_t num_warps,
+                                                  int32_t threads_per_warp,
+                                                  int32_t num_ctas) {
+  SparseAddEncodingPassOptions options;
   options.num_warps_ = num_warps;
   options.threads_per_warp_ = threads_per_warp;
   options.num_ctas_ = num_ctas;
-  return std::make_unique<SparseAddDotEncodingPass>(options);
+  return std::make_unique<SparseAddEncodingPass>(options);
 }
 
 std::unique_ptr<Pass> CreateSparseBlockedToMMAPass() {

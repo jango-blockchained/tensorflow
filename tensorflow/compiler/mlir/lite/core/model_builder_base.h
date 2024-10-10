@@ -40,11 +40,11 @@ limitations under the License.
 #include "flatbuffers/buffer.h"  // from @flatbuffers
 #include "flatbuffers/vector.h"  // from @flatbuffers
 #include "flatbuffers/verifier.h"  // from @flatbuffers
+#include "tensorflow/compiler/mlir/lite/allocation.h"
+#include "tensorflow/compiler/mlir/lite/core/api/error_reporter.h"
+#include "tensorflow/compiler/mlir/lite/core/api/verifier.h"
 #include "tensorflow/compiler/mlir/lite/core/macros.h"
 #include "tensorflow/compiler/mlir/lite/schema/schema_generated.h"
-#include "tensorflow/lite/allocation.h"
-#include "tensorflow/lite/core/api/error_reporter.h"
-#include "tensorflow/lite/core/api/verifier.h"
 
 namespace tflite {
 
@@ -53,6 +53,8 @@ std::unique_ptr<Allocation> GetAllocationFromFile(
 
 std::unique_ptr<Allocation> GetAllocationFromFile(
     int fd, ErrorReporter* error_reporter);
+
+namespace impl {
 
 /// An RAII object that represents a read-only tflite model, copied from disk,
 /// or mmapped. This uses flatbuffers as the serialization format.
@@ -81,8 +83,6 @@ std::unique_ptr<Allocation> GetAllocationFromFile(
 /// OpResolver must be defined to provide your kernel implementations to the
 /// interpreter. This is environment specific and may consist of just the
 /// builtin ops, or some custom operators you defined to extend tflite.
-namespace impl {
-
 template <typename T>
 class FlatBufferModelBase {
  public:
@@ -386,9 +386,15 @@ class FlatBufferModelBase {
       size_t allocation_size =
           std::min(allocation->bytes(),
                    static_cast<size_t>(FLATBUFFERS_MAX_BUFFER_SIZE - 1));
+      flatbuffers::Verifier::Options options;
+      // TODO(b/366118885): Remove after the root cause of the crash on Windows
+      // is found.
+#if defined(_WIN32)
+      options.assert = true;
+#endif
       flatbuffers::Verifier base_verifier(
-          reinterpret_cast<const uint8_t*>(allocation->base()),
-          allocation_size);
+          reinterpret_cast<const uint8_t*>(allocation->base()), allocation_size,
+          options);
       if (!VerifyModelBuffer(base_verifier)) {
         TF_LITE_REPORT_ERROR(error_reporter,
                              "The model is not a valid Flatbuffer buffer");

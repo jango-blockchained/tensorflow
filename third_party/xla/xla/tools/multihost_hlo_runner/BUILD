@@ -30,7 +30,7 @@ cc_library(
     srcs = ["hlo_runner_main.cc"],
     compatible_with = None,
     tags = [
-        "nomac",
+        "no_mac",
     ],
     deps = [
         ":create_client",
@@ -72,7 +72,7 @@ xla_cc_binary(
     name = "hlo_runner_main",
     testonly = True,
     tags = [
-        "nomac",
+        "no_mac",
     ],
     deps = [
         ":hlo_runner_main_lib",
@@ -83,8 +83,9 @@ xla_cc_binary(
     name = "hlo_runner_main_gpu",
     testonly = True,
     tags = [
+        "cuda-only",
         "gpu",
-        "nomac",
+        "no_mac",
     ] + tf_gpu_tests_tags(),
     deps = [
         ":hlo_runner_main_lib",
@@ -136,6 +137,8 @@ cc_library(
         "//xla/client:executable_build_options",
         "//xla/client:xla_computation",
         "//xla/hlo/ir:hlo",
+        "//xla/hlo/parser:hlo_parser",
+        "//xla/hlo/pass:hlo_pass_pipeline",
         "//xla/pjrt:host_memory_spaces",
         "//xla/pjrt:pjrt_client",
         "//xla/pjrt:pjrt_compiler",
@@ -145,8 +148,6 @@ cc_library(
         "//xla/service:computation_layout",
         "//xla/service:computation_placer_hdr",
         "//xla/service:hlo_module_config",
-        "//xla/service:hlo_parser",
-        "//xla/service:hlo_pass_pipeline",
         "//xla/service:hlo_proto_cc",
         "//xla/tests:test_utils",
         "//xla/tools:hlo_control_flow_flattening",
@@ -171,12 +172,10 @@ xla_test(
     name = "functional_hlo_runner_test",
     srcs = ["functional_hlo_runner_test.cc"],
     backend_tags = {
-        # This test is tagged "manual" because it requires multiple (2) GPUs.
         "gpu": [
-            "manual",
-            "multi_gpu",
+            "multi_gpu_h100",
             "no_oss",
-            "notap",
+            "nomsan",
         ],
     },
     backends = [
@@ -190,7 +189,7 @@ xla_test(
         "data/single_device.hlo",
         "data/single_device_tupled.hlo",
     ],
-    tags = ["nomac"],
+    tags = ["no_mac"],
     deps = [
         ":create_client",
         ":functional_hlo_runner",

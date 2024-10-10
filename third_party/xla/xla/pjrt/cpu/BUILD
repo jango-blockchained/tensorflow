@@ -104,7 +104,6 @@ cc_library(
 tf_proto_library(
     name = "cpu_topology_proto",
     srcs = ["cpu_topology.proto"],
-    cc_api_version = 2,
     visibility = ["//visibility:public"],
 )
 
@@ -141,6 +140,7 @@ cc_library(
         ":cpu_topology",
         ":tracked_tfrt_cpu_device_buffer",
         "//xla:array",
+        "//xla:cpu_function_runtime",
         "//xla:debug_options_flags",
         "//xla:executable_run_options",
         "//xla:literal",
@@ -149,8 +149,11 @@ cc_library(
         "//xla:util",
         "//xla:xla_data_proto_cc",
         "//xla:xla_proto_cc",
+        "//xla/backends/cpu/runtime:buffer_allocations",
+        "//xla/backends/cpu/runtime:thunk",
+        "//xla/backends/cpu/runtime:thunk_executor",
         "//xla/client:executable_build_options",
-        "//xla/client:xla_computation",
+        "//xla/hlo/builder:xla_computation",
         "//xla/hlo/ir:hlo",
         "//xla/pjrt:compile_options_proto_cc",
         "//xla/pjrt:host_memory_spaces",
@@ -185,13 +188,12 @@ cc_library(
         "//xla/service/cpu:cpu_runtime",
         "//xla/service/cpu:cpu_xfeed",
         "//xla/service/cpu:simple_orc_jit",
-        "//xla/service/cpu/runtime:buffer_allocations",
-        "//xla/service/cpu/runtime:thunk",
-        "//xla/service/cpu/runtime:thunk_executor",
         "//xla/stream_executor",
         "//xla/tsl/concurrency:async_value",
         "//xla/tsl/concurrency:ref_count",
+        "//xla/tsl/lib/strings:proto_serialization",
         "@com_google_absl//absl/algorithm:container",
+        "@com_google_absl//absl/base",
         "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/base:dynamic_annotations",
         "@com_google_absl//absl/container:flat_hash_map",
@@ -208,7 +210,6 @@ cc_library(
         "@com_google_absl//absl/types:span",
         "@eigen_archive//:eigen3",  # TODO(zhangqiaorjc): Remove if use TFRT threadpool.
         "@llvm-project//mlir:IR",
-        "@local_tsl//tsl/lib/strings:proto_serialization",
         "@local_tsl//tsl/platform:casts",
         "@local_tsl//tsl/platform:denormal",
         "@local_tsl//tsl/platform:env",
@@ -230,15 +231,16 @@ xla_cc_test(
         "//xla:literal",
         "//xla:literal_util",
         "//xla:shape_util",
+        "//xla:types",
         "//xla:util",
         "//xla:xla_data_proto_cc",
-        "//xla/client:xla_computation",
         "//xla/ffi",
         "//xla/ffi:ffi_api",
+        "//xla/hlo/builder:xla_computation",
+        "//xla/hlo/parser:hlo_parser",
         "//xla/pjrt:host_memory_spaces",
         "//xla/pjrt:pjrt_client",
         "//xla/pjrt:pjrt_executable",
-        "//xla/service:hlo_parser",
         "//xla/service:hlo_proto_cc",
         "//xla/tests:literal_test_util",
         "//xla/tests:test_utils",
@@ -306,7 +308,7 @@ cc_library(
 xla_cc_test(
     name = "gloo_collectives_test",
     srcs = ["gloo_collectives_test.cc"],
-    tags = ["nomac"],
+    linkstatic = True,
     deps = [
         ":gloo_collectives",
         ":gloo_kv_store",
@@ -321,13 +323,21 @@ xla_cc_test(
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/time",
         "@com_google_absl//absl/types:span",
-        "@gloo//:transport_tcp",
         "@local_tsl//tsl/platform:env",
         "@local_tsl//tsl/platform:errors",
         "@local_tsl//tsl/platform:statusor",
         "@local_tsl//tsl/platform:test",
+        "@local_tsl//tsl/platform:test_benchmark",
         "@local_tsl//tsl/platform:test_main",
-    ],
+    ] + select({
+        # Gloo's transport_tcp is not available on MacOS
+        "//xla/tsl:macos": [
+            "@gloo//:transport_uv",
+        ],
+        "//conditions:default": [
+            "@gloo//:transport_tcp",
+        ],
+    }),
 )
 
 cc_library(

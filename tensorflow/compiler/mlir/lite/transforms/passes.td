@@ -52,35 +52,6 @@ def DecomposeHybridQuantizationPass : Pass<"tfl-decompose-hybrid-quantization", 
   let dependentDialects = ["TFL::TensorFlowLiteDialect"];
 }
 
-def DenseToSparsePass : Pass<"tfl-dense-to-sparse", "mlir::func::FuncOp"> {
-  let summary = "Convert dense tensor to sparse format.";
-  let description = [{
-      This pass encodes sparse weights in the model in the proper format, and adds
-      Densify() op if necessary. The general algorithm is:
-        1. Get list of operands (weights) of an op that can be sparse.
-        2. Get list of supported block configurations of the op.
-        3. Calculate random sparsity of the weight.
-          3.1. If sparsity level is below the encoding threshold, keep in dense.
-          3.2. If sparsity level is above the encoding threshold, go to 4.
-        4. Try to encode the weight with supported block configurations. If the
-           weight was pruned with the same block config, the blocked sparsity level
-           should match the random sparsity.
-          4.1. Return the matching block config if found.
-          4.2. If no matching block config is found, encode the weight with random
-               sparsity, and add Densify() op to fall back to dense execution.
-  }];
-  let constructor = "CreateDenseToSparsePass()";
-  let dependentDialects = ["TFL::TensorFlowLiteDialect"];
-  let options = [
-    Option<"default_min_", "default-min", "double", "-1.0",
-               "Default minimum value for TFLite quantization">,
-    Option<"default_max_", "default-max", "double", "1.0",
-               "Default maximum value for TFLite quantization">,
-    Option<"is_signed_", "is-signed", "bool", "false",
-               "Is the corresponding integer signed">,
-  ];
-}
-
 def IdentifyDilatedConvPass : Pass<"tfl-identify-dilated-conv", "mlir::func::FuncOp"> {
   let summary = "Convert dense tensor to sparse format.";
   let constructor = "CreateIdentifyDilatedConvPass()";
@@ -115,7 +86,7 @@ def LegalizeTFPass : Pass<"tfl-legalize-tf", "mlir::func::FuncOp"> {
   let summary = "Legalize from TensorFlow to TensorFlow Lite dialect.";
   let constructor = "CreateLegalizeTFPass()";
   let dependentDialects = ["TFL::TensorFlowLiteDialect" ,
-    "quant::QuantizationDialect",
+    "quant::QuantDialect",
     "quantfork::QuantizationForkDialect"
   ];
   let options = [
@@ -177,20 +148,6 @@ def ModifyIONodesPass : Pass<"tfl-modify-io-nodes", "mlir::func::FuncOp"> {
   let options = [
       ListOption<"io_node_types_", "test-io-types", "std::string",
                  "comma separated type strings. Allowed values: 'int8', 'uint8', 'float32']">,
-  ];
-}
-
-def OptimizePass : Pass<"tfl-optimize", "mlir::func::FuncOp"> {
-  let summary = "Optimize within the TensorFlow Lite dialect";
-  let constructor = "CreateOptimizePass()";
-  let dependentDialects = ["TFL::TensorFlowLiteDialect"];
-  let options = [
-      Option<"enable_canonicalization_", "enable-canonicalization",
-             "bool", "false",
-             "Enable canonicalization during optimization pass.">,
-      Option<"disable_fuse_mul_and_fc_", "disable-fuse-mul-and-fc",
-             "bool", "false",
-             "Disable folding mul and fully connected ops during optimization pass.">,
   ];
 }
 
@@ -286,7 +243,7 @@ def PrepareQuantizePass : Pass<"tfl-prepare-quantize", "mlir::func::FuncOp"> {
   let summary = "Remove qdq from input and output nodes after quantization.";
   let constructor = "CreatePrepareQuantizePass()";
   let dependentDialects = ["TFL::TensorFlowLiteDialect",
-    "quant::QuantizationDialect",
+    "quant::QuantDialect",
     "quantfork::QuantizationForkDialect"
   ];
   let options = [
@@ -317,7 +274,7 @@ def PrepareDynamicRangeQuantizePass : Pass<"tfl-prepare-quantize-dynamic-range",
   let summary = "Prepare TFL dialect for dynamic range quantization.";
   let constructor = "CreatePrepareDynamicRangeQuantizePass()";
   let dependentDialects = ["TFL::TensorFlowLiteDialect",
-    "mlir::quant::QuantizationDialect",
+    "mlir::quant::QuantDialect",
     "mlir::quantfork::QuantizationForkDialect"
   ];
   let options = [
@@ -343,7 +300,7 @@ def PrepareTFPass : Pass<"tfl-prepare-tf", "mlir::func::FuncOp"> {
   let summary = "Prepare TF for legalization to TensorFlow Lite dialect.";
   let constructor = "CreatePrepareTFPass()";
   let dependentDialects = ["TFL::TensorFlowLiteDialect",
-    "mlir::quant::QuantizationDialect",
+    "mlir::quant::QuantDialect",
     "mlir::quantfork::QuantizationForkDialect",
     "mhlo::MhloDialect"
   ];
@@ -364,7 +321,7 @@ def QuantizePass : Pass<"tfl-quantize", "mlir::func::FuncOp"> {
   let summary = "Apply quantization on models in TensorFlow Lite dialect.";
   let constructor = "CreateDefaultQuantizePass()";
   let dependentDialects = ["TFL::TensorFlowLiteDialect",
-    "mlir::quant::QuantizationDialect",
+    "mlir::quant::QuantDialect",
     "mlir::quantfork::QuantizationForkDialect"
   ];
 
@@ -457,6 +414,12 @@ def WhileOutlinePass : Pass<"tfl-while-loop-outline", "mlir::ModuleOp"> {
   let dependentDialects = ["TF::TensorFlowDialect"];
 }
 
+def IfOutlinePass : Pass<"tfl-if-outline", "mlir::ModuleOp"> {
+  let summary = "Hoist if op regions into functions";
+  let constructor = "CreateIfOutlinePass()";
+  let dependentDialects = ["TFL::TensorFlowLiteDialect"];
+}
+
 def LegalizeTensorListPass : Pass<"tfl-legalize-tensorlist", "mlir::ModuleOp"> {
   let summary = "Legalize TensorFlow tensorlist ops to TensorFlow Lite custom.";
   let constructor = "CreateLegalizeTensorListPass()";
@@ -475,7 +438,8 @@ def PushTransposeThroughEwisePass : Pass<"push-transpose-through-ewise", "mlir::
   let dependentDialects = ["TFL::TensorFlowLiteDialect"];
 }
 
-def UnfreezeMutableGlobalTensorsPass : Pass<"unfreeze-mutable-global-tensors", "mlir::ModuleOp"> {
-  let summary = "Pass to unfreeze mutable global tensor ops";
-  let constructor = "CreateUnfreezeMutableGlobalTensorsPass()";
+def CanonicalizeBoundaryValuePass : Pass<"canonicalize-boundary-value", "mlir::ModuleOp"> {
+  let summary = "Canonicalize the IR representations of boundary values";
+  let dependentDialects = ["mlir::stablehlo::StablehloDialect", "TF::TensorFlowDialect", "mlir::arith::ArithDialect"];
+  let constructor = "CreateCanonicalizeBoundaryValuePass()";
 }

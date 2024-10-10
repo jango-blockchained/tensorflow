@@ -22,7 +22,6 @@ limitations under the License.
 #include "absl/synchronization/mutex.h"
 #include "xla/stream_executor/executor_cache.h"
 #include "xla/stream_executor/platform.h"
-#include "xla/stream_executor/platform/port.h"
 #include "xla/stream_executor/platform_manager.h"
 #include "xla/stream_executor/stream_executor.h"
 
@@ -39,7 +38,6 @@ extern const Platform::Id kROCmPlatformId;
 class ROCmPlatform : public Platform {
  public:
   ROCmPlatform();
-  ~ROCmPlatform() override;
 
   // Platform interface implementation:
   // Returns the same value as kROCmPlatform above.
@@ -54,16 +52,14 @@ class ROCmPlatform : public Platform {
       int ordinal) const override;
 
   absl::StatusOr<StreamExecutor*> ExecutorForDevice(int ordinal) override;
-
-  absl::StatusOr<StreamExecutor*> GetExecutor(
-      const StreamExecutorConfig& config) override;
+  absl::StatusOr<StreamExecutor*> FindExisting(int ordinal) override;
 
  private:
-  // Returns a device constructed with the options specified in "config" without
+  // Returns a device constructed with ordinal without
   // looking in or storing to the Platform's executor cache.
   // Ownership IS transferred to the caller.
   absl::StatusOr<std::unique_ptr<StreamExecutor>> GetUncachedExecutor(
-      const StreamExecutorConfig& config);
+      int ordinal);
 
   // This platform's name.
   std::string name_;

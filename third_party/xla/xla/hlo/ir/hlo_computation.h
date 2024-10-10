@@ -17,18 +17,20 @@ limitations under the License.
 #define XLA_HLO_IR_HLO_COMPUTATION_H_
 
 #include <cstdint>
-#include <list>
 #include <memory>
 #include <optional>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "absl/algorithm/container.h"
 #include "absl/container/flat_hash_map.h"
 #include "absl/container/flat_hash_set.h"
+#include "absl/container/inlined_vector.h"
 #include "absl/functional/function_ref.h"
 #include "absl/log/check.h"
 #include "absl/log/log.h"
+#include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/cord.h"
 #include "absl/strings/string_view.h"
@@ -42,9 +44,14 @@ limitations under the License.
 #include "xla/printer.h"
 #include "xla/service/hlo.pb.h"
 #include "xla/service/name_uniquer.h"
+#include "xla/shape.h"
 #include "xla/shape_tree.h"
+#include "xla/shape_util.h"
+#include "xla/status_macros.h"
+#include "xla/tsl/lib/gtl/iterator_range.h"
 #include "xla/util.h"
 #include "xla/xla_data.pb.h"
+#include "tsl/platform/errors.h"
 
 namespace xla {
 
@@ -780,17 +787,23 @@ class HloComputation {
   }
 
   // Returns if this computation is a body computation of a while.
+  [[deprecated(
+      "This is broken. Use CallGraph::GetComputationCallers() instead")]]
   bool IsWhileBodyComputation() const {
     return instruction_type() == InstructionType::kWhile;
   }
 
   // Returns the owning while call instruction, or nullptr if this is not a
   // while call body computation.
+  [[deprecated(
+      "This is broken. Use CallGraph::GetComputationCallers() instead")]]
   HloInstruction* WhileCallInstruction() const {
     return instruction_type() == InstructionType::kWhile ? instruction()
                                                          : nullptr;
   }
 
+  [[deprecated(
+      "This is broken. Use CallGraph::GetComputationCallers() instead")]]
   void SetWhileCallInstruction(HloInstruction* while_call_instruction) {
     CHECK(while_call_instruction != nullptr);
     CHECK(while_call_instruction->opcode() == HloOpcode::kWhile);
@@ -798,17 +811,23 @@ class HloComputation {
   }
 
   // Returns if this computation is a branch computation of a conditional.
+  [[deprecated(
+      "This is broken. Use CallGraph::GetComputationCallers() instead")]]
   bool IsConditionalBranchComputation() const {
     return instruction_type() == InstructionType::kConditional;
   }
 
   // Returns the owning conditional call instruction, or nullptr if this is not
   // a conditional branch computation.
+  [[deprecated(
+      "This is broken. Use CallGraph::GetComputationCallers() instead")]]
   HloInstruction* ConditionalCallInstruction() const {
     return instruction_type() == InstructionType::kConditional ? instruction()
                                                                : nullptr;
   }
 
+  [[deprecated(
+      "This is broken. Use CallGraph::GetComputationCallers() instead")]]
   void SetConditionalCallInstruction(
       HloInstruction* conditional_call_instruction) {
     CHECK(conditional_call_instruction != nullptr);

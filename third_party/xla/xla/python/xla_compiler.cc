@@ -45,16 +45,18 @@ limitations under the License.
 #include "nanobind/stl/vector.h"  // IWYU pragma: keep
 #include "xla/array.h"
 #include "xla/client/executable_build_options.h"
-#include "xla/client/xla_builder.h"
-#include "xla/client/xla_computation.h"
 #include "xla/debug_options_flags.h"
 #include "xla/ffi/api/c_api.h"
 #include "xla/ffi/ffi.h"
 #include "xla/ffi/ffi_api.h"
+#include "xla/hlo/builder/xla_builder.h"
+#include "xla/hlo/builder/xla_computation.h"
 #include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/hlo/ir/hlo_module.h"
 #include "xla/hlo/ir/hlo_module_group.h"
 #include "xla/hlo/ir/hlo_sharding.h"
+#include "xla/hlo/parser/hlo_parser.h"
+#include "xla/hlo/pass/hlo_pass_interface.h"
 #include "xla/layout.h"
 #include "xla/layout_util.h"
 #include "xla/literal.h"
@@ -74,16 +76,14 @@ limitations under the License.
 #include "xla/service/hlo_dce.h"
 #include "xla/service/hlo_graph_dumper.h"
 #include "xla/service/hlo_module_config.h"
-#include "xla/service/hlo_parser.h"
-#include "xla/service/hlo_pass_interface.h"
 #include "xla/service/name_uniquer.h"
 #include "xla/service/tuple_simplifier.h"
 #include "xla/shape.h"
 #include "xla/shape_util.h"
+#include "xla/tsl/lib/strings/proto_serialization.h"
 #include "xla/util.h"
 #include "xla/xla.pb.h"
 #include "xla/xla_data.pb.h"
-#include "tsl/lib/strings/proto_serialization.h"
 #include "tsl/platform/env.h"
 #include "tsl/platform/errors.h"
 #include "tsl/platform/logging.h"
@@ -1199,6 +1199,20 @@ void BuildXlaCompilerSubmodule(nb::module_& m) {
                    &DebugOptions::xla_gpu_dump_autotune_logs_to,
                    [](DebugOptions* self, std::string value) {
                      self->set_xla_gpu_dump_autotune_logs_to(value);
+                   })
+      .def_prop_rw("xla_gpu_kernel_cache_file",
+                   &DebugOptions::xla_gpu_kernel_cache_file,
+                   [](DebugOptions* self, std::string value) {
+                     self->set_xla_gpu_kernel_cache_file(value);
+                   })
+      .def_prop_rw(
+          "xla_gpu_enable_llvm_module_compilation_parallelism",
+          &DebugOptions::xla_gpu_enable_llvm_module_compilation_parallelism,
+          &DebugOptions::set_xla_gpu_enable_llvm_module_compilation_parallelism)
+      .def_prop_rw("xla_gpu_per_fusion_autotune_cache_dir",
+                   &DebugOptions::xla_gpu_per_fusion_autotune_cache_dir,
+                   [](DebugOptions* self, std::string value) {
+                     self->set_xla_gpu_per_fusion_autotune_cache_dir(value);
                    });
 
   nb::class_<ExecutableBuildOptions>(m, "ExecutableBuildOptions")

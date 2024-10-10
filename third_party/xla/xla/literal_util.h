@@ -44,8 +44,8 @@ limitations under the License.
 #include "xla/shape.h"
 #include "xla/shape_util.h"
 #include "xla/status_macros.h"
+#include "xla/tsl/lib/core/bitmap.h"
 #include "xla/xla_data.pb.h"
-#include "tsl/lib/core/bitmap.h"
 #include "tsl/platform/errors.h"
 #include "tsl/platform/logging.h"  // IWYU pragma: keep
 
@@ -239,10 +239,13 @@ class LiteralUtil {
   // If the given literal's data type is <SrcType>, converts it to a <DstType>
   // literal; otherwise, returns a copy of it. If the literal is a tuple,
   // recursively converts its elements.
+  static Literal ConvertS8ToF32(const LiteralSlice& s8_literal);
   static Literal ConvertBF16ToF32(const LiteralSlice& bf16_literal);
   static Literal ConvertBF16ToF64(const LiteralSlice& bf16_literal);
   static Literal ConvertF32ToF8E4M3FNUZ(const LiteralSlice& f32_literal);
   static Literal ConvertF32ToF8E5M2FNUZ(const LiteralSlice& f32_literal);
+  static Literal ConvertF32ToF8E5M2(const LiteralSlice& f32_literal);
+  static Literal ConvertF32ToF8E4M3FN(const LiteralSlice& f32_literal);
   static Literal ConvertF32ToBF16(const LiteralSlice& f32_literal);
   static Literal ConvertF32ToS8(const LiteralSlice& f32_literal);
   static Literal ConvertF32ToF64(const LiteralSlice& f32_literal);
@@ -533,7 +536,7 @@ template <typename NativeT>
 template <typename NativeT>
 /* static */ Literal LiteralUtil::MakeScalarMatrixR2(int64_t size,
                                                      NativeT scalar) {
-  Array2D<NativeT> array(size, size, 0);
+  Array2D<NativeT> array(size, size, NativeT(0));
   for (int64_t i = 0; i < size; ++i) {
     array(i, i) = scalar;
   }
@@ -542,7 +545,7 @@ template <typename NativeT>
 
 template <typename NativeT>
 /* static */ Literal LiteralUtil::MakeIdentityR2(int64_t size) {
-  return MakeScalarMatrixR2<NativeT>(size, 1);
+  return MakeScalarMatrixR2<NativeT>(size, NativeT(1));
 }
 
 template <typename NativeT>
@@ -550,7 +553,7 @@ template <typename NativeT>
                                                            NativeT scale) {
   NativeT row_factor = log10(m) + 1;
   NativeT col_factor = log10(n) + 1;
-  Array2D<NativeT> array(m, n, 0);
+  Array2D<NativeT> array(m, n, NativeT(0));
   for (int64_t i = 0; i < m; ++i) {
     for (int64_t j = 0; j < n; ++j) {
       array(i, i) = scale * (row_factor * i + col_factor * j);

@@ -595,15 +595,14 @@ nb::list PyTreeDef::FlattenUpTo(nb::handle xs) const {
 
       case PyTreeKind::kNone:
         if (!object.is_none()) {
-          PythonDeprecationWarning(
-              /*stacklevel=*/3,
-              "In a future release of JAX, flatten-up-to will no longer "
-              "consider None to be a tree-prefix of non-None values, got: "
-              "%s.\n\n"
-              "To preserve the current behavior, you can usually write:\n"
+          throw std::invalid_argument(absl::StrFormat(
+              "Expected None, got %s.\n\n"
+              "In previous releases of JAX, flatten-up-to used to "
+              "consider None to be a tree-prefix of non-None values. To obtain "
+              "the previous behavior, you can usually write:\n"
               "  jax.tree.map(lambda x, y: None if x is None else f(x, y), a, "
               "b, is_leaf=lambda x: x is None)",
-              nb::cast<std::string_view>(nb::repr(object)));
+              nb::cast<std::string_view>(nb::repr(object))));
         }
         break;
 
@@ -1249,7 +1248,7 @@ nb_class_ptr<PyTreeDef> PyTreeDef::MakeFromNodeDataAndChildren(
         nb::cast<std::string_view>(nb::repr(node_data->first))));
   }
   node.kind = registration->kind;
-  if (node.kind == PyTreeKind::kCustom) {
+  if (node.kind == PyTreeKind::kCustom || node.kind == PyTreeKind::kDataclass) {
     node.custom = registration;
     node.node_data = node_data->second;
   } else if (node.kind == PyTreeKind::kNamedTuple) {

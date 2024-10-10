@@ -25,6 +25,7 @@ limitations under the License.
 #include <vector>
 
 #include "absl/status/status.h"
+#include "xla/tsl/protobuf/coordination_config.pb.h"
 #include "tensorflow/core/common_runtime/process_util.h"
 #include "tensorflow/core/common_runtime/profile_handler.h"
 #include "tensorflow/core/common_runtime/stats_publisher_interface.h"
@@ -64,7 +65,6 @@ limitations under the License.
 #include "tensorflow/core/public/session_options.h"
 #include "tensorflow/core/util/device_name_utils.h"
 #include "tsl/platform/tracing.h"
-#include "tsl/protobuf/coordination_config.pb.h"
 
 namespace tensorflow {
 
@@ -474,7 +474,7 @@ Status MasterSession::ReffedClientGraph::DoRegisterPartitions(
     Status status;
   };
   const int num = partitions_.size();
-  gtl::InlinedVector<Call, 4> calls(num);
+  absl::InlinedVector<Call, 4UL> calls(num);
   BlockingCounter done(num);
   for (int i = 0; i < num; ++i) {
     const Part& part = partitions_[i];
@@ -588,7 +588,7 @@ class RunManyGraphs {
   }
 
  private:
-  gtl::InlinedVector<Call, 4> calls_;
+  absl::InlinedVector<Call, 4UL> calls_;
 
   BlockingCounter pending_;
   mutable mutex mu_;
@@ -911,7 +911,7 @@ class CleanupBroadcastHelper {
   // A single request shared between all workers.
   CleanupGraphRequest req_;
   // One response buffer for each worker.
-  gtl::InlinedVector<CleanupGraphResponse, 4> resps_;
+  absl::InlinedVector<CleanupGraphResponse, 4UL> resps_;
 
   mutex mu_;
   // Number of requests remaining to be collected.

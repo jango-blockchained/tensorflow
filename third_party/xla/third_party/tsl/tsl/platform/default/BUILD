@@ -3,6 +3,7 @@ load("@bazel_skylib//:bzl_library.bzl", "bzl_library")
 load("@local_tsl//tsl/platform:rules_cc.bzl", "cc_library")
 load(
     "@local_xla//xla/tsl:tsl.bzl",
+    "if_cuda_tools",
     "if_not_fuchsia",
     "if_not_windows",
     "if_oss",
@@ -55,10 +56,13 @@ cc_library(
 )
 
 cc_library(
-    name = "cuda_libdevice_path",
-    srcs = ["cuda_libdevice_path.cc"],
-    hdrs = ["//tsl/platform:cuda_libdevice_path.h"],
+    name = "cuda_root_path",
+    srcs = ["cuda_root_path.cc"],
+    hdrs = ["//tsl/platform:cuda_root_path.h"],
     compatible_with = [],
+    data = if_cuda_tools([
+        "@cuda_nvcc//:nvvm",
+    ]),
     tags = [
         "manual",
         "no_oss",
@@ -66,6 +70,7 @@ cc_library(
     ],
     deps = [
         "//tsl/platform",
+        "//tsl/platform:env",
         "//tsl/platform:logging",
         "//tsl/platform:path",
         "//tsl/platform:types",
@@ -152,12 +157,12 @@ cc_library(
         "//tsl/platform:threadpool_interface",
         "//tsl/platform:tracing",
         "//tsl/platform:types",
-        "//tsl/protobuf:error_codes_proto_impl_cc",
         "@com_google_absl//absl/functional:any_invocable",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/time",
         "@com_google_absl//absl/types:optional",
         "@eigen_archive//:eigen3",
+        "@local_xla//xla/tsl/protobuf:error_codes_proto_impl_cc",
     ],
 )
 
@@ -177,7 +182,7 @@ cc_library(
         "//tsl/platform:logging",
         "//tsl/platform:mutex",
         "//tsl/platform:strcat",
-        "//tsl/protobuf:error_codes_proto_impl_cc",
+        "@local_xla//xla/tsl/protobuf:error_codes_proto_impl_cc",
     ],
 )
 
@@ -468,7 +473,7 @@ cc_library(
         "//tsl/platform:strcat",
         "//tsl/platform:stringpiece",
         "//tsl/platform:types",
-        "//tsl/profiler/backends/cpu:threadpool_listener_state",
+        "@local_xla//xla/tsl/profiler/backends/cpu:threadpool_listener_state",
     ],
     alwayslink = True,
 )
@@ -568,6 +573,7 @@ bzl_library(
     name = "build_config_root_bzl",
     srcs = ["build_config_root.bzl"],
     # copybara:uncomment parse_tests = False,
+    deps = ["//third_party/py/rules_pywrap:pywrap_bzl"],
 )
 
 # Export source files needed for mobile builds, which do not use granular targets.

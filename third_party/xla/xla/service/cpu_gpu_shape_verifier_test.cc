@@ -20,7 +20,7 @@ limitations under the License.
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
-#include "xla/service/hlo_parser.h"
+#include "xla/hlo/parser/hlo_parser.h"
 #include "xla/service/hlo_verifier.h"
 #include "xla/tests/hlo_test_base.h"
 #include "xla/tsl/lib/core/status_test_util.h"
@@ -58,7 +58,7 @@ TEST_F(CpuGpuShapeVerifierTest, Int4UnsupportedInstruction) {
   ASSERT_FALSE(status.ok());
   EXPECT_THAT(
       status.message(),
-      HasSubstr("u4 is currently only supported in convert instructions"));
+      HasSubstr("u4 is currently only supported in allow-listed instructions"));
 }
 
 TEST_F(CpuGpuShapeVerifierTest, Int4SupportedInstruction) {
@@ -73,6 +73,22 @@ TEST_F(CpuGpuShapeVerifierTest, Int4SupportedInstruction) {
   ENTRY main {
     p0 = u4[] parameter(0)
     ROOT out = u4[3, 3] call(p0), to_apply=bcast
+  }
+  )";
+  TF_ASSERT_OK_AND_ASSIGN(auto module,
+                          ParseAndReturnUnverifiedModule(hlo_string));
+
+  auto status = verifier().Run(module.get()).status();
+  TF_EXPECT_OK(status);
+}
+
+TEST_F(CpuGpuShapeVerifierTest, Int4ShardingCustomCall) {
+  const char* const hlo_string = R"(
+  HloModule Module
+
+  ENTRY main {
+    p0 = u4[] parameter(0)
+    ROOT sharded = u4[] custom-call(p0), custom_call_target="Sharding"
   }
   )";
   TF_ASSERT_OK_AND_ASSIGN(auto module,

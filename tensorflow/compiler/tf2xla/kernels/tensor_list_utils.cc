@@ -18,17 +18,21 @@ limitations under the License.
 #include <vector>
 
 #include "absl/log/log.h"
-#include "tensorflow/compiler/tf2xla/shape_util.h"
-#include "xla/client/xla_builder.h"
+#include "absl/status/status.h"
+#include "tensorflow/compiler/tf2xla/xla_expression.h"
+#include "tensorflow/compiler/tf2xla/xla_op_kernel.h"
+#include "xla/hlo/builder/xla_builder.h"
 #include "xla/literal_util.h"
 #include "xla/shape.h"
 #include "xla/shape_util.h"
 #include "xla/status_macros.h"
 #include "xla/util.h"
 #include "xla/xla_data.pb.h"
-#include "tensorflow/core/framework/tensor_shape.h"
 #include "tensorflow/core/lib/core/errors.h"
-#include "tensorflow/core/platform/statusor.h"
+#include "tensorflow/core/platform/status.h"
+#include "tensorflow/core/platform/types.h"
+#include "tsl/platform/errors.h"
+#include "tsl/platform/statusor.h"
 
 // TensorList is represented by a tuple.
 // - The first part of the tuple is a buffer containing all the tensors,

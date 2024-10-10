@@ -30,10 +30,10 @@ limitations under the License.
 #include "absl/strings/string_view.h"
 #include "absl/strings/substitute.h"
 #include "absl/types/span.h"
-#include "xla/client/padding.h"
+#include "xla/hlo/builder/padding.h"
 #include "xla/hlo/ir/hlo_instructions.h"
 #include "xla/hlo/ir/hlo_opcode.h"
-#include "xla/service/hlo_parser.h"
+#include "xla/hlo/parser/hlo_parser.h"
 #include "xla/shape.h"
 #include "xla/shape_util.h"
 #include "xla/test.h"
@@ -237,6 +237,18 @@ TEST_F(ShapeInferenceTest, SelectBadShapes) {
   ASSERT_FALSE(inferred_shape_error4.ok());
   ASSERT_THAT(inferred_shape_error4.status().message(),
               HasSubstr("Expected array argument for select pred"));
+}
+
+TEST_F(ShapeInferenceTest, SelectPreservesElementSize) {
+  Shape pred_shape = ShapeUtil::MakeShape(PRED, {10});
+  Shape int4_shape = ShapeUtil::MakeShape(S4, {10});
+  int4_shape.mutable_layout()->set_element_size_in_bits(4);
+
+  const absl::StatusOr<Shape> inferred_shape =
+      ShapeInference::InferTernaryOpShape(HloOpcode::kSelect, pred_shape,
+                                          int4_shape, int4_shape);
+  ASSERT_IS_OK(inferred_shape.status());
+  ASSERT_TRUE(ShapeUtil::Equal(*inferred_shape, int4_shape));
 }
 
 TEST_F(ShapeInferenceTest, ClampAllMatrix) {
@@ -2870,6 +2882,24 @@ TEST_F(GatherShapeInferenceTest, TensorFlowGatherV2) {
       << ShapeUtil::HumanString(gather_shape);
 }
 
+TEST_F(GatherShapeInferenceTest, TensorFlowGatherBatchingDims) {
+  TF_ASSERT_OK_AND_ASSIGN(const Shape gather_shape,
+                          ShapeInference::InferGatherShape(
+                              ShapeUtil::MakeShape(F32, {100, 64, 5, 48}),
+                              ShapeUtil::MakeShape(S64, {5, 100, 32}),
+                              HloGatherInstruction::MakeGatherDimNumbers(
+                                  /*offset_dims=*/{3},
+                                  /*collapsed_slice_dims=*/{1},
+                                  /*start_index_map=*/{1},
+                                  /*index_vector_dim=*/3,
+                                  /*operand_batching_dims=*/{0, 2},
+                                  /*start_indices_batching_dims=*/{1, 0}),
+                              /*slice_sizes=*/{1, 1, 1, 8}));
+  EXPECT_TRUE(ShapeUtil::Equal(gather_shape,
+                               ShapeUtil::MakeShape(F32, {5, 100, 32, 8})))
+      << ShapeUtil::HumanString(gather_shape);
+}
+
 TEST_F(GatherShapeInferenceTest, TensorFlowGatherNd) {
   TF_ASSERT_OK_AND_ASSIGN(const Shape gather_shape,
                           ShapeInference::InferGatherShape(
@@ -3473,6 +3503,27 @@ TEST_P(ScatterShapeInferenceTest, TfScatterWithUpdatesBiggerThanInputV2) {
           /*inserted_window_dims=*/{0},
           /*scatter_dims_to_operand_dims=*/{1},
           /*index_vector_dim=*/1));
+  ASSERT_FALSE(statusor.ok());
+  EXPECT_THAT(
+      statusor.status().message(),
+      HasSubstr("Bounds of the window dimensions of updates must not exceed "
+                "the bounds of the corresponding dimensions of operand."))
+      << statusor.status();
+}
+
+TEST_P(ScatterShapeInferenceTest,
+       TfScatterBatchingDimsWithUpdatesBiggerThanInput) {
+  const auto shapes = CreateShapes({100, 64, 48}, s64_tensor({100, 32}),
+                                   {100, 65, 32}, types());
+  const absl::StatusOr<Shape> statusor = ShapeInference::InferScatterShape(
+      shapes.ptrs, to_apply(types()),
+      HloScatterInstruction::MakeScatterDimNumbers(
+          /*update_window_dims=*/{1},
+          /*inserted_window_dims=*/{2},
+          /*scatter_dims_to_operand_dims=*/{1},
+          /*index_vector_dim=*/2,
+          /*input_batching_dims=*/{0},
+          /*scatter_indices_batching_dims=*/{0}));
   ASSERT_FALSE(statusor.ok());
   EXPECT_THAT(
       statusor.status().message(),

@@ -46,10 +46,7 @@ pytype_strict_library(
 #     testonly = 1,
 #     srcs = ["integration_test/quantize_model_test_base.py"],
 #     tags = ["no_pip"],
-#     visibility = [
-#         "//learning/brain/mlir/quantization/stablehlo:__subpackages__",
-#         "//tensorflow/compiler/mlir/quantization:__subpackages__",
-#     ],
+#     visibility = ["//visibility:private"],
 #     deps = [
 #         "//third_party/py/mlir:ir",
 #         "//third_party/py/mlir:stablehlo_dialect",
@@ -154,6 +151,9 @@ tf_python_pybind_extension(
     name = "pywrap_quantization",
     srcs = ["pywrap_quantization.cc"],
     pytype_srcs = ["pywrap_quantization.pyi"],
+    visibility = [
+        "//tensorflow/python:__pkg__",
+    ],
     # Each dependency MUST be either header-only or exclusive.
     deps = [
         ":pywrap_quantization_lib_header_only",

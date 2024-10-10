@@ -38,7 +38,6 @@ limitations under the License.
 #include "xla/pjrt/pjrt_executable.h"
 #include "xla/pjrt/pjrt_stream_executor_client.h"
 #include "xla/service/platform_util.h"
-#include "xla/service/stream_pool.h"
 #include "xla/stream_executor/platform.h"
 #include "xla/tests/literal_test_util.h"
 #include "xla/tsl/lib/core/status_test_util.h"
@@ -62,10 +61,8 @@ TEST(StableHloAxpyTest, LoadAndRunCpuExecutable) {
   //   PlatformUtil::GetPlatform("CUDA"));
   TF_ASSERT_OK_AND_ASSIGN(se::Platform * platform,
                           PlatformUtil::GetPlatform("cpu"));
-  se::StreamExecutorConfig config;
-  config.ordinal = 0;
   TF_ASSERT_OK_AND_ASSIGN(se::StreamExecutor * executor,
-                          platform->GetExecutor(config));
+                          platform->ExecutorForDevice(/*ordinal=*/0));
 
   // LocalDeviceState and PjRtStreamExecutorDevice describes the state of a
   // device which can do computation or transfer buffers. This could represent a

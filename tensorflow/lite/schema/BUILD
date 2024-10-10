@@ -48,10 +48,10 @@ py_strict_library(
         "upgrade_schema.py",
     ],
     data = [
-        "schema_v0.fbs",
-        "schema_v1.fbs",
-        "schema_v2.fbs",
-        "schema_v3.fbs",
+        "//tensorflow/compiler/mlir/lite/schema:schema_v0.fbs",
+        "//tensorflow/compiler/mlir/lite/schema:schema_v1.fbs",
+        "//tensorflow/compiler/mlir/lite/schema:schema_v2.fbs",
+        "//tensorflow/compiler/mlir/lite/schema:schema_v3.fbs",
         "@flatbuffers//:flatc",
     ],
     srcs_version = "PY3",
@@ -103,19 +103,26 @@ py_strict_test(
 
 exports_files([
     "conversion_metadata.fbs",
-    "schema.fbs",
-    "schema_v0.fbs",
-    "schema_v1.fbs",
-    "schema_v2.fbs",
-    "schema_v3.fbs",
-    "schema_v3a.fbs",
-    "schema_v3b.fbs",
 ])
 
-flatbuffer_cc_library(
-    name = "schema_fbs",
-    srcs = ["//tensorflow/compiler/mlir/lite/schema:schema.fbs"],
-    compatible_with = get_compatible_with_portable(),
+# copybara:uncomment_begin(google-only)
+# flatbuffer_cc_library(
+#     name = "schema_fbs",
+#     srcs = ["//tensorflow/compiler/mlir/lite/schema:schema.fbs"],
+#     compatible_with = get_compatible_with_portable(),
+# )
+# copybara:uncomment_end(google-only)
+
+cc_library(
+    name = "schema_fbs",  # copybara:comment_replace name = "schema_fbs_for_oss",
+    hdrs = [
+        ":schema_generated.h",
+        "//tensorflow/compiler/mlir/lite/schema:schema_generated.h",
+    ],
+    deps = [
+        "//tensorflow/compiler/mlir/lite/schema:schema_fbs",
+        "@flatbuffers//:runtime_cc",
+    ],
 )
 
 # Generic schema for flatbuffer converter (but with mutable makes bigger).
@@ -162,7 +169,7 @@ cc_library(
 
 flatbuffer_cc_library(
     name = "conversion_metadata_fbs",
-    srcs = ["conversion_metadata.fbs"],
+    srcs = ["//tensorflow/compiler/mlir/lite/schema:conversion_metadata.fbs"],
     compatible_with = get_compatible_with_portable(),
 )
 

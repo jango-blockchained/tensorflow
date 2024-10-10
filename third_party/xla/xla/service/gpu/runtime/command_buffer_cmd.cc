@@ -53,6 +53,7 @@ limitations under the License.
 #include "xla/service/gpu/runtime/annotation.h"
 #include "xla/service/gpu/runtime/nccl_all_gather_thunk.h"
 #include "xla/service/gpu/runtime/nccl_all_reduce_thunk.h"
+#include "xla/service/gpu/runtime/nccl_all_to_all_thunk.h"
 #include "xla/service/gpu/runtime/nccl_api.h"
 #include "xla/service/gpu/runtime/nccl_clique_key.h"
 #include "xla/service/gpu/runtime/nccl_collective_broadcast_thunk.h"
@@ -340,7 +341,7 @@ absl::Status CommandBufferCmdSequence::Record(
       TF_RETURN_IF_ERROR(command_buffer->Barrier(execution_scope_id));
       num_recorded_commands.erase(execution_scope_id);
     }
-    VLOG(5) << " Record command buffer with scope id "
+    VLOG(5) << "Record command buffer with scope id "
             << execution_scope_id.value();
 
     TF_RETURN_IF_ERROR(
@@ -1168,314 +1169,6 @@ CommandBufferCmd::BufferUsageVector GemmCmd::buffers() {
 }
 
 //===----------------------------------------------------------------------===//
-// FusedMHACmd
-//===----------------------------------------------------------------------===//
-
-FusedMHACmd::FusedMHACmd(
-    ExecutionStreamId execution_stream_id, GpufMHAConfig config,
-    BufferAllocation::Slice lhs_bmm1, BufferAllocation::Slice rhs_bmm1,
-    BufferAllocation::Slice rhs_bmm2, BufferAllocation::Slice output,
-    BufferAllocation::Slice scratch, BufferAllocation::Slice mask,
-    BufferAllocation::Slice bias, BufferAllocation::Slice activation,
-    BufferAllocation::Slice seqlen_q, BufferAllocation::Slice seqlen_k)
-    : TracedCommandBufferCmd(CommandBufferCmdType::kFusedMHACmd,
-                             execution_stream_id),
-      config_(std::move(config)),
-      lhs_bmm1_buffer_(lhs_bmm1),
-      rhs_bmm1_buffer_(rhs_bmm1),
-      rhs_bmm2_buffer_(rhs_bmm2),
-      output_buffer_(output),
-      scratch_buffer_(scratch),
-      bias_buffer_(bias),
-      activation_buffer_(activation),
-      seqlen_q_buffer_(seqlen_q),
-      seqlen_k_buffer_(seqlen_k) {}
-
-FusedMultiHeadedAttentionRunner& FusedMHACmd::GetOrCreateRunner(
-    const stream_executor::Stream* stream) {
-  absl::MutexLock lock(&mutex_);
-  auto it = runner_cache_.find(stream);
-  if (it == runner_cache_.end()) {
-    it = runner_cache_
-             .insert({stream, std::make_unique<FusedMultiHeadedAttentionRunner>(
-                                  config_)})
-             .first;
-  }
-  return *it->second;
-}
-
-absl::Status FusedMHACmd::Initialize(const Thunk::InitializeParams& params,
-                                     StateManager& state) {
-  se::dnn::LazyOpRunner<se::dnn::FusedMHAOp>* lazy_runner =
-      GetOrCreateRunner(params.command_buffer_trace_stream).AsFusedMHARunner();
-  TF_ASSIGN_OR_RETURN(auto config, config_.AsDnnFusedMHAOpConfig());
-  return lazy_runner
-      ->GetOrCreateRunner(config, params.command_buffer_trace_stream)
-      .status();
-}
-
-absl::Status FusedMHACmd::Record(const Thunk::ExecuteParams& execute_params,
-                                 const RecordParams& record_params,
-                                 se::CommandBuffer* command_buffer) {
-  se::dnn::LazyOpRunner<se::dnn::FusedMHAOp>* lazy_runner =
-      GetOrCreateRunner(execute_params.command_buffer_trace_stream)
-          .AsFusedMHARunner();
-  CHECK(lazy_runner) << "FusedMHA lazy runner cache should have been populated";
-
-  const auto& buffer_allocations = *execute_params.buffer_allocations;
-  se::DeviceMemoryBase lhs_bmm1_buffer =
-      buffer_allocations.GetDeviceAddress(lhs_bmm1_buffer_);
-  se::DeviceMemoryBase rhs_bmm1_buffer =
-      buffer_allocations.GetDeviceAddress(rhs_bmm1_buffer_);
-  se::DeviceMemoryBase rhs_bmm2_buffer =
-      buffer_allocations.GetDeviceAddress(rhs_bmm2_buffer_);
-  se::DeviceMemoryBase output_buffer =
-      buffer_allocations.GetDeviceAddress(output_buffer_);
-  se::DeviceMemoryBase scratch_buffer =
-      buffer_allocations.GetDeviceAddress(scratch_buffer_);
-
-  std::optional<se::DeviceMemoryBase> bias_buffer =
-      AssignBufferIfNotNull(buffer_allocations, bias_buffer_);
-  std::optional<se::DeviceMemoryBase> activation_buffer =
-      AssignBufferIfNotNull(buffer_allocations, activation_buffer_);
-  std::optional<se::DeviceMemoryBase> seqlen_q_buffer =
-      AssignBufferIfNotNull(buffer_allocations, seqlen_q_buffer_);
-  std::optional<se::DeviceMemoryBase> seqlen_k_buffer =
-      AssignBufferIfNotNull(buffer_allocations, seqlen_k_buffer_);
-
-  ExecutionScopeId execution_scope_id = GetExecutionScope(record_params);
-  VLOG(5) << "FusedMHACmd with execution_scope_id: "
-          << execution_scope_id.value();
-  VLOG(5) << " lhs_bmm1_buffer: " << lhs_bmm1_buffer_.ToString();
-  VLOG(5) << " rhs_bmm1_buffer: " << rhs_bmm1_buffer_.ToString();
-  VLOG(5) << " rhs_bmm2_buffer: " << rhs_bmm2_buffer_.ToString();
-  VLOG(5) << " output_buffer: " << output_buffer_.ToString();
-  VLOG(5) << " scratch_buffer: " << scratch_buffer_.ToString();
-  VLOG(5) << " bias_buffer: " << bias_buffer_.ToString();
-  VLOG(5) << " activation_buffer: " << activation_buffer_.ToString();
-  VLOG(5) << " seqlen_q_buffer: " << seqlen_q_buffer_.ToString();
-  VLOG(5) << " seqlen_k_buffer: " << seqlen_k_buffer_.ToString();
-
-  RunFusedMHAOptions opts;
-  opts.runner_cache =
-      &GetOrCreateRunner(execute_params.command_buffer_trace_stream);
-  return AddTracedCommandBuffer(
-      execute_params, record_params, command_buffer, [&](se::Stream* stream) {
-        return RunGpuFMHA(config_, lhs_bmm1_buffer, rhs_bmm1_buffer,
-                          rhs_bmm2_buffer, output_buffer, scratch_buffer,
-                          bias_buffer, activation_buffer, seqlen_q_buffer,
-                          seqlen_k_buffer, stream, opts);
-      });
-}
-
-FusedMHACmd::BufferUsageVector FusedMHACmd::buffers() {
-  BufferUsageVector buffer_usage;
-  buffer_usage.reserve(9);
-  buffer_usage.push_back({lhs_bmm1_buffer_, MemoryAccess::kRead});
-  buffer_usage.push_back({rhs_bmm1_buffer_, MemoryAccess::kRead});
-  buffer_usage.push_back({rhs_bmm2_buffer_, MemoryAccess::kRead});
-  buffer_usage.push_back({output_buffer_, MemoryAccess::kWrite});
-  buffer_usage.push_back({scratch_buffer_, MemoryAccess::kWrite});
-  if (bias_buffer_.allocation() != nullptr) {
-    buffer_usage.push_back({bias_buffer_, MemoryAccess::kRead});
-  }
-  if (activation_buffer_.allocation() != nullptr) {
-    buffer_usage.push_back({activation_buffer_, MemoryAccess::kRead});
-  }
-  if (seqlen_q_buffer_.allocation() != nullptr) {
-    buffer_usage.push_back({seqlen_q_buffer_, MemoryAccess::kRead});
-  }
-  if (seqlen_k_buffer_.allocation() != nullptr) {
-    buffer_usage.push_back({seqlen_k_buffer_, MemoryAccess::kRead});
-  }
-  return buffer_usage;
-}
-
-//===----------------------------------------------------------------------===//
-// FusedMHABackwardCmd
-//===----------------------------------------------------------------------===//
-
-FusedMHABackwardCmd::FusedMHABackwardCmd(
-    ExecutionStreamId execution_stream_id, GpufMHABackwardConfig config,
-    BufferAllocation::Slice bmm1_grad_gemm1_rhs,
-    BufferAllocation::Slice bmm1_grad_gemm2_rhs,
-    BufferAllocation::Slice bmm2_grad_gemm1_lhs,
-    BufferAllocation::Slice bmm2_grad_gemm2_rhs,
-    BufferAllocation::Slice d_output, BufferAllocation::Slice scratch,
-    BufferAllocation::Slice d_bmm1_lhs, BufferAllocation::Slice d_bmm1_rhs,
-    BufferAllocation::Slice d_bmm2_rhs, BufferAllocation::Slice d_s,
-    BufferAllocation::Slice d_bias, BufferAllocation::Slice fwd_output,
-    BufferAllocation::Slice bias, BufferAllocation::Slice seqlen_q,
-    BufferAllocation::Slice seqlen_k)
-    : TracedCommandBufferCmd(CommandBufferCmdType::kFusedMHABackwardCmd,
-                             execution_stream_id),
-      config_(std::move(config)),
-      bmm1_grad_gemm1_rhs_buffer_(bmm1_grad_gemm1_rhs),
-      bmm1_grad_gemm2_rhs_buffer_(bmm1_grad_gemm2_rhs),
-      bmm2_grad_gemm1_lhs_buffer_(bmm2_grad_gemm1_lhs),
-      bmm2_grad_gemm2_rhs_buffer_(bmm2_grad_gemm2_rhs),
-      d_output_buffer_(d_output),
-      scratch_buffer_(scratch),
-      d_bmm1_lhs_buffer_(d_bmm1_lhs),
-      d_bmm1_rhs_buffer_(d_bmm1_rhs),
-      d_bmm2_rhs_buffer_(d_bmm2_rhs),
-      d_s_buffer_(d_s),
-      d_bias_buffer_(d_bias),
-      fwd_output_buffer_(fwd_output),
-      bias_buffer_(bias),
-      seqlen_q_buffer_(seqlen_q),
-      seqlen_k_buffer_(seqlen_k) {}
-
-FusedMultiHeadedAttentionBackwardRunner& FusedMHABackwardCmd::GetOrCreateRunner(
-    const stream_executor::Stream* stream) {
-  absl::MutexLock lock(&mutex_);
-  auto it = runner_cache_.find(stream);
-  if (it == runner_cache_.end()) {
-    it = runner_cache_
-             .insert({stream,
-                      std::make_unique<FusedMultiHeadedAttentionBackwardRunner>(
-                          config_)})
-             .first;
-  }
-  return *it->second;
-}
-
-absl::Status FusedMHABackwardCmd::Initialize(
-    const Thunk::InitializeParams& params, StateManager& state) {
-  se::dnn::LazyOpRunner<se::dnn::FusedMHABackwardOp>* lazy_runner =
-      GetOrCreateRunner(params.command_buffer_trace_stream)
-          .AsFusedMHABackwardRunner();
-  TF_ASSIGN_OR_RETURN(auto config, config_.AsDnnFusedMHABackwardOpConfig());
-  return lazy_runner
-      ->GetOrCreateRunner(config, params.command_buffer_trace_stream)
-      .status();
-}
-
-absl::Status FusedMHABackwardCmd::Record(
-    const Thunk::ExecuteParams& execute_params,
-    const RecordParams& record_params, se::CommandBuffer* command_buffer) {
-  se::dnn::LazyOpRunner<se::dnn::FusedMHABackwardOp>* lazy_runner =
-      GetOrCreateRunner(execute_params.command_buffer_trace_stream)
-          .AsFusedMHABackwardRunner();
-  CHECK(lazy_runner)
-      << "FusedMHABackward lazy runner cache should have been populated";
-
-  const auto& buffer_allocations = *execute_params.buffer_allocations;
-  se::DeviceMemoryBase bmm1_grad_gemm1_rhs_buffer =
-      buffer_allocations.GetDeviceAddress(bmm1_grad_gemm1_rhs_buffer_);
-
-  se::DeviceMemoryBase bmm1_grad_gemm2_rhs_buffer =
-      buffer_allocations.GetDeviceAddress(bmm1_grad_gemm2_rhs_buffer_);
-
-  se::DeviceMemoryBase bmm2_grad_gemm1_lhs_buffer =
-      buffer_allocations.GetDeviceAddress(bmm2_grad_gemm1_lhs_buffer_);
-
-  se::DeviceMemoryBase bmm2_grad_gemm2_rhs_buffer =
-      buffer_allocations.GetDeviceAddress(bmm2_grad_gemm2_rhs_buffer_);
-
-  se::DeviceMemoryBase d_output_buffer =
-      buffer_allocations.GetDeviceAddress(d_output_buffer_);
-
-  se::DeviceMemoryBase scratch_buffer =
-      buffer_allocations.GetDeviceAddress(scratch_buffer_);
-
-  se::DeviceMemoryBase d_bmm1_lhs_buffer =
-      buffer_allocations.GetDeviceAddress(d_bmm1_lhs_buffer_);
-
-  se::DeviceMemoryBase d_bmm1_rhs_buffer =
-      buffer_allocations.GetDeviceAddress(d_bmm1_rhs_buffer_);
-
-  se::DeviceMemoryBase d_bmm2_rhs_buffer =
-      buffer_allocations.GetDeviceAddress(d_bmm2_rhs_buffer_);
-
-  std::optional<se::DeviceMemoryBase> d_s_buffer =
-      AssignBufferIfNotNull(buffer_allocations, d_s_buffer_);
-  std::optional<se::DeviceMemoryBase> d_bias_buffer =
-      AssignBufferIfNotNull(buffer_allocations, d_bias_buffer_);
-  std::optional<se::DeviceMemoryBase> fwd_output_buffer =
-      AssignBufferIfNotNull(buffer_allocations, fwd_output_buffer_);
-  std::optional<se::DeviceMemoryBase> bias_buffer =
-      AssignBufferIfNotNull(buffer_allocations, bias_buffer_);
-  std::optional<se::DeviceMemoryBase> seqlen_q_buffer =
-      AssignBufferIfNotNull(buffer_allocations, seqlen_q_buffer_);
-  std::optional<se::DeviceMemoryBase> seqlen_k_buffer =
-      AssignBufferIfNotNull(buffer_allocations, seqlen_k_buffer_);
-
-  ExecutionScopeId execution_scope_id = GetExecutionScope(record_params);
-  VLOG(5) << "FusedMHABackwardCmd with execution_scope_id: "
-          << execution_scope_id.value();
-  VLOG(5) << "bmm1_grad_gemm1_rhs_buffer"
-          << bmm1_grad_gemm1_rhs_buffer_.ToString();
-  VLOG(5) << "bmm1_grad_gemm2_rhs_buffer"
-          << bmm1_grad_gemm2_rhs_buffer_.ToString();
-  VLOG(5) << "bmm2_grad_gemm1_lhs_buffer"
-          << bmm2_grad_gemm1_lhs_buffer_.ToString();
-  VLOG(5) << "bmm2_grad_gemm2_rhs_buffer"
-          << bmm2_grad_gemm2_rhs_buffer_.ToString();
-  VLOG(5) << "d_output_buffer" << d_output_buffer_.ToString();
-  VLOG(5) << "scratch_buffer" << scratch_buffer_.ToString();
-  VLOG(5) << "d_bmm1_lhs_buffer" << d_bmm1_lhs_buffer_.ToString();
-  VLOG(5) << "d_bmm1_rhs_buffer" << d_bmm1_rhs_buffer_.ToString();
-  VLOG(5) << "d_bmm2_rhs_buffer" << d_bmm2_rhs_buffer_.ToString();
-  VLOG(5) << "d_s_buffer" << d_s_buffer_.ToString();
-  VLOG(5) << "d_bias_buffer" << d_bias_buffer_.ToString();
-  VLOG(5) << "fwd_output_buffer" << fwd_output_buffer_.ToString();
-  VLOG(5) << "bias_buffer" << bias_buffer_.ToString();
-  VLOG(5) << "seqlen_q_buffer" << seqlen_q_buffer_.ToString();
-  VLOG(5) << "seqlen_k_buffer" << seqlen_k_buffer_.ToString();
-
-  RunFusedMHABackwardOptions opts;
-  opts.runner_cache =
-      &GetOrCreateRunner(execute_params.command_buffer_trace_stream);
-  return AddTracedCommandBuffer(
-      execute_params, record_params, command_buffer, [&](se::Stream* stream) {
-        return RunGpuFMHABackward(
-            config_, bmm1_grad_gemm1_rhs_buffer, bmm1_grad_gemm2_rhs_buffer,
-            bmm2_grad_gemm1_lhs_buffer, bmm2_grad_gemm2_rhs_buffer,
-            d_output_buffer, scratch_buffer, d_bmm1_lhs_buffer,
-            d_bmm1_rhs_buffer, d_bmm2_rhs_buffer, d_s_buffer, d_bias_buffer,
-            fwd_output_buffer, bias_buffer, seqlen_q_buffer, seqlen_k_buffer,
-            stream, opts);
-      });
-}
-
-FusedMHABackwardCmd::BufferUsageVector FusedMHABackwardCmd::buffers() {
-  BufferUsageVector buffer_usage;
-  buffer_usage.reserve(15);
-
-  buffer_usage.push_back({bmm1_grad_gemm1_rhs_buffer_, MemoryAccess::kRead});
-  buffer_usage.push_back({bmm1_grad_gemm2_rhs_buffer_, MemoryAccess::kRead});
-  buffer_usage.push_back({bmm2_grad_gemm1_lhs_buffer_, MemoryAccess::kRead});
-  buffer_usage.push_back({bmm2_grad_gemm2_rhs_buffer_, MemoryAccess::kRead});
-  buffer_usage.push_back({d_output_buffer_, MemoryAccess::kWrite});
-  buffer_usage.push_back({scratch_buffer_, MemoryAccess::kWrite});
-  buffer_usage.push_back({d_bmm1_lhs_buffer_, MemoryAccess::kRead});
-  buffer_usage.push_back({d_bmm1_rhs_buffer_, MemoryAccess::kRead});
-  buffer_usage.push_back({d_bmm2_rhs_buffer_, MemoryAccess::kRead});
-
-  if (d_s_buffer_.allocation() != nullptr) {
-    buffer_usage.push_back({d_s_buffer_, MemoryAccess::kRead});
-  };
-  if (d_bias_buffer_.allocation() != nullptr) {
-    buffer_usage.push_back({d_bias_buffer_, MemoryAccess::kRead});
-  };
-  if (fwd_output_buffer_.allocation() != nullptr) {
-    buffer_usage.push_back({fwd_output_buffer_, MemoryAccess::kRead});
-  };
-  if (bias_buffer_.allocation() != nullptr) {
-    buffer_usage.push_back({bias_buffer_, MemoryAccess::kRead});
-  };
-  if (seqlen_q_buffer_.allocation() != nullptr) {
-    buffer_usage.push_back({seqlen_q_buffer_, MemoryAccess::kRead});
-  };
-  if (seqlen_k_buffer_.allocation() != nullptr) {
-    buffer_usage.push_back({seqlen_k_buffer_, MemoryAccess::kRead});
-  };
-
-  return buffer_usage;
-}
-
-//===----------------------------------------------------------------------===//
 // CublasLtCmd
 //===----------------------------------------------------------------------===//
 
@@ -1677,7 +1370,8 @@ absl::Status CuDnnCmd::Record(const Thunk::ExecuteParams& execute_params,
   return AddTracedCommandBuffer(
       execute_params, record_params, command_buffer, [&](se::Stream* stream) {
         return graph_->get()->Execute(
-            *stream, absl::Span<se::DeviceMemoryBase>(operands));
+            *stream, absl::Span<se::DeviceMemoryBase>(operands),
+            execute_params.collective_params->local_device_ordinal);
       });
 }
 
@@ -1835,8 +1529,9 @@ absl::Status CustomCallCmd::RecordXlaFfiCall(
           execute_params.command_buffer_trace_stream, [&](se::Stream* stream) {
             ffi::CallOptions options = {
                 execute_params.buffer_allocations->device_ordinal(),
-                execute_params.stream,
-                execute_params.buffer_allocations->memory_allocator(),
+                ffi::CallOptions::GpuOptions{
+                    execute_params.stream,
+                    execute_params.buffer_allocations->memory_allocator()},
                 /*called_computation=*/nullptr,  // TODO(b/342285364)
                 execute_params.ffi_execution_context};
             return ffi::Call(handler_, call_frame, options);
@@ -1919,30 +1614,16 @@ absl::Status CollectiveCmd::BarrierIfAsync(
 absl::Status CollectiveCmd::Prepare(
     const Thunk::PrepareParams& params,
     Thunk::ResourceRequests& resource_requests) {
-  const Thunk::CollectiveExecuteParams* collectives = params.collective_params;
-
   TF_ASSIGN_OR_RETURN(
-      std::vector<GlobalDeviceId> participants,
-      GetParticipatingDevices(collectives->global_device_id,
-                              *collectives->device_assn,
+      NcclCliqueKey clique_key,
+      GetNcclCliqueKey(*params.collective_params, config().replica_groups,
+                       config().group_mode, nccl_stream_id(),
+                       GetAsyncStreamKind()));
+  TF_ASSIGN_OR_RETURN(
+      size_t num_local_participants,
+      GetNumLocalParticipants(*params.collective_params,
                               config().replica_groups, config().group_mode));
-
-  std::vector<GlobalDeviceId> local_devices;
-  if (collectives->global_device_id_map) {
-    local_devices.reserve(collectives->global_device_id_map->size());
-    for (const auto& entry : *collectives->global_device_id_map) {
-      local_devices.push_back(entry.second);
-    }
-  }
-
-  size_t num_local_participants = GetNumLocalParticipants(
-      participants,
-      collectives->global_device_id_map ? &local_devices : nullptr);
-
-  return resource_requests.AddClique(
-      NcclCliqueKey(std::move(participants), nccl_stream_id(),
-                    GetAsyncStreamKind()),
-      num_local_participants);
+  return resource_requests.AddClique(clique_key, num_local_participants);
 }
 
 absl::Status CollectiveCmd::AddTracedCommandBuffer(
@@ -2092,6 +1773,76 @@ absl::Status ReduceScatterCmd::Record(
 }
 
 CommandBufferCmd::BufferUsageVector ReduceScatterCmd::buffers() {
+  BufferUsageVector buffer_usage;
+  for (auto& buffer : buffers_) {
+    buffer_usage.emplace_back(buffer.source_buffer, MemoryAccess::kRead);
+    buffer_usage.emplace_back(buffer.destination_buffer, MemoryAccess::kWrite);
+  }
+  return buffer_usage;
+}
+
+//===----------------------------------------------------------------------===//
+// AllToAllCmd
+//===----------------------------------------------------------------------===//
+
+AllToAllCmd::AllToAllCmd(ExecutionStreamId execution_stream_id,
+                         ExecutionStreamId async_from_stream_id,
+                         NcclApi* nccl_api, NcclCollectiveConfig config,
+                         bool has_split_dimension,
+                         absl::Span<const NcclCollectiveThunk::Buffer> buffers)
+    : CollectiveCmd(CommandBufferCmdType::kAllToAll, execution_stream_id,
+                    async_from_stream_id, nccl_api, std::move(config)),
+      has_split_dimension_(has_split_dimension),
+      buffers_(buffers.begin(), buffers.end()) {}
+
+absl::Status AllToAllCmd::Record(const Thunk::ExecuteParams& execute_params,
+                                 const RecordParams& record_params,
+                                 se::CommandBuffer* command_buffer) {
+  TF_RETURN_IF_ERROR(BarrierIfAsync(
+      command_buffer, execute_params.stream->parent(), record_params));
+
+  TF_ASSIGN_OR_RETURN(
+      std::vector<DeviceBufferPair> device_buffers,
+      ConvertToDeviceBuffers(execute_params.buffer_allocations, buffers_,
+                             config().operand_element_type));
+
+  ExecutionScopeId execution_scope_id = GetExecutionScope(record_params);
+  VLOG(5) << "AllToAllCmd, has_split_dimension=" << has_split_dimension_
+          << ", execution_scope_id=" << execution_scope_id.value();
+
+  for (size_t i = 0; i < device_buffers.size(); ++i) {
+    VLOG(5) << "  Src: " << buffers_[i].source_buffer << " ("
+            << device_buffers[i].source_buffer.opaque() << ")";
+    VLOG(5) << "  Dst: " << buffers_[i].destination_buffer << " ("
+            << device_buffers[i].destination_buffer.opaque() << ")";
+  }
+
+  if (!execute_params.collective_params || !execute_params.collective_cliques) {
+    return absl::InvalidArgumentError(
+        "ReduceScatterCmd requires collective parameters and cliques");
+  }
+
+  TF_ASSIGN_OR_RETURN(
+      NcclCommHandleWrapper comm_handle,
+      GetNcclComm(*execute_params.collective_params,
+                  *execute_params.collective_cliques, config().replica_groups,
+                  config().group_mode, nccl_stream_id(), GetAsyncStreamKind()));
+  NcclApi::NcclCommHandle comm = comm_handle.comm_handle;
+  // Use custom allocator for persistent execution plans.
+  NcclApi::ScopedPersistentPlanAllocator scoped_allocator(
+      comm, tsl::MakeRef<NcclApi::PersistentPlanAllocator>(
+                execute_params.buffer_allocations->device_ordinal(),
+                execute_params.buffer_allocations->memory_allocator(),
+                execute_params.stream));
+
+  return AddTracedCommandBuffer(
+      execute_params, record_params, command_buffer, [&](se::Stream* stream) {
+        return RunAllToAll(nccl_api(), has_split_dimension_, device_buffers,
+                           *stream, comm);
+      });
+}
+
+CommandBufferCmd::BufferUsageVector AllToAllCmd::buffers() {
   BufferUsageVector buffer_usage;
   for (auto& buffer : buffers_) {
     buffer_usage.emplace_back(buffer.source_buffer, MemoryAccess::kRead);

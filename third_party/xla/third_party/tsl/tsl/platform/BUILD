@@ -21,7 +21,7 @@ load(
 load("@local_xla//xla/tsl:tsl.default.bzl", "get_compatible_with_portable")
 load(
     "//tsl/platform:build_config.bzl",
-    "tf_cuda_libdevice_path_deps",
+    "tf_cuda_root_path_deps",
     "tf_error_logging_deps",
     "tf_fingerprint_deps",
     "tf_google_mobile_srcs_no_runtime",
@@ -68,6 +68,7 @@ cc_library(
         ":status",
         ":stringpiece",
         ":types",
+        "@com_google_absl//absl/status",
     ],
 )
 
@@ -96,6 +97,17 @@ cc_library(
         ":stringpiece",
         ":tstring",
         ":types",
+    ],
+)
+
+tsl_cc_test(
+    name = "cpu_info_test",
+    size = "small",
+    srcs = ["cpu_info_test.cc"],
+    deps = [
+        ":platform_port",
+        ":test",
+        ":test_main",
     ],
 )
 
@@ -150,6 +162,28 @@ cc_library(
         "threadpool.h",
     ],
     deps = tf_windows_aware_platform_deps("env") + if_static([":env_impl"]),
+)
+
+cc_library(
+    name = "threadpool_async_executor",
+    hdrs = ["threadpool_async_executor.h"],
+    deps = [
+        ":env",
+        "@local_xla//xla/tsl/concurrency:async_value",
+    ],
+)
+
+tsl_cc_test(
+    name = "threadpool_async_executor_test",
+    srcs = ["threadpool_async_executor_test.cc"],
+    deps = [
+        ":env",
+        ":env_impl",
+        ":test",
+        ":test_main",
+        ":threadpool_async_executor",
+        "@com_google_absl//absl/synchronization",
+    ],
 )
 
 cc_library(
@@ -280,7 +314,6 @@ cc_library(
         ":strcat",
         ":stringprintf",
         ":types",
-        "//tsl/protobuf:error_codes_proto_impl_cc",
         "@com_google_absl//absl/base",
         "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/functional:function_ref",
@@ -288,6 +321,7 @@ cc_library(
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/strings:cord",
         "@com_google_absl//absl/types:optional",
+        "@local_xla//xla/tsl/protobuf:error_codes_proto_impl_cc",
     ] + tf_platform_deps("status"),
 )
 
@@ -299,8 +333,10 @@ cc_library(
     hdrs = ["status_to_from_proto.h"],
     deps = [
         ":status",
-        "//tsl/protobuf:error_codes_proto_impl_cc",
-        "//tsl/protobuf:status_proto_cc",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/strings:cord",
+        "@local_xla//xla/tsl/protobuf:error_codes_proto_impl_cc",
+        "@local_xla//xla/tsl/protobuf:status_proto_cc",
     ] + tf_platform_deps("status"),
 )
 
@@ -313,7 +349,7 @@ cc_library(
         ":status",
         ":statusor",
         ":test",
-        "//tsl/protobuf:error_codes_proto_impl_cc",
+        "@local_xla//xla/tsl/protobuf:error_codes_proto_impl_cc",
     ],
 )
 
@@ -641,7 +677,7 @@ exports_files(
         "cpu_info.h",
         "crash_analysis.h",
         "criticality.h",
-        "cuda_libdevice_path.h",
+        "cuda_root_path.h",
         "demangle.h",
         "env.cc",
         "env.h",
@@ -1163,10 +1199,10 @@ tsl_cc_test(
 )
 
 cc_library(
-    name = "cuda_libdevice_path",
+    name = "cuda_root_path",
     compatible_with = get_compatible_with_portable(),
-    textual_hdrs = ["cuda_libdevice_path.h"],
-    deps = tf_cuda_libdevice_path_deps(),
+    textual_hdrs = ["cuda_root_path.h"],
+    deps = tf_cuda_root_path_deps(),
 )
 
 cc_library(
@@ -1325,11 +1361,11 @@ tsl_cc_test(
         ":status_to_from_proto",
         ":test",
         ":test_main",
-        "//tsl/protobuf:error_codes_proto_impl_cc",
-        "//tsl/protobuf:status_proto_cc",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings:cord",
         "@com_google_absl//absl/strings:str_format",
+        "@local_xla//xla/tsl/protobuf:error_codes_proto_impl_cc",
+        "@local_xla//xla/tsl/protobuf:status_proto_cc",
     ],
 )
 
@@ -1359,7 +1395,7 @@ tsl_cc_test(
         ":statusor",
         ":test",
         ":test_main",
-        "//tsl/protobuf:error_codes_proto_impl_cc",
+        "@local_xla//xla/tsl/protobuf:error_codes_proto_impl_cc",
     ],
 )
 

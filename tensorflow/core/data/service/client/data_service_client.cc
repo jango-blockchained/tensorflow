@@ -31,6 +31,7 @@ limitations under the License.
 #include "absl/strings/ascii.h"
 #include "absl/strings/substitute.h"
 #include "absl/time/time.h"
+#include "xla/tsl/protobuf/error_codes.pb.h"
 #include "tensorflow/core/data/service/client/common.h"
 #include "tensorflow/core/data/service/client/validate_utils.h"
 #include "tensorflow/core/data/service/common.h"
@@ -53,9 +54,7 @@ limitations under the License.
 #include "tensorflow/core/platform/thread_annotations.h"
 #include "tensorflow/core/profiler/lib/traceme.h"
 #include "tensorflow/core/profiler/lib/traceme_encode.h"
-#include "tsl/platform/host_info.h"
 #include "tsl/platform/retrying_utils.h"
-#include "tsl/protobuf/error_codes.pb.h"
 
 namespace tensorflow {
 namespace data {
@@ -381,9 +380,7 @@ DataServiceClient::CreateAlternativeWorkerClientWithGrpcFallback(
 absl::StatusOr<std::unique_ptr<DataServiceWorkerClient>>
 DataServiceClient::CreateWorkerClient(const TaskInfo& task_info) {
   if (params_.data_transfer_protocol == kLocalTransferProtocol ||
-      // TODO(b/291994182): Use remote workers in unit tests.
-      (tsl::port::JobUid() != -1 &&
-       LocalWorkers::Get(task_info.worker_address()) != nullptr)) {
+      ForceLocalProtocol(task_info.worker_address())) {
     DataTransferServerInfo info;
     info.set_protocol(kLocalTransferProtocol);
     info.set_address(task_info.worker_address());

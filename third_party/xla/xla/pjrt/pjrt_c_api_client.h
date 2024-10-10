@@ -37,7 +37,7 @@ limitations under the License.
 #include "absl/synchronization/mutex.h"
 #include "absl/types/span.h"
 #include "mlir/IR/BuiltinOps.h"
-#include "xla/client/xla_computation.h"
+#include "xla/hlo/builder/xla_computation.h"
 #include "xla/hlo/ir/hlo_module.h"
 #include "xla/layout.h"
 #include "xla/literal.h"
@@ -408,13 +408,6 @@ class PjRtCApiClient : public PjRtClient {
   absl::StatusOr<ChannelHandle> CreateDeviceToHostChannelHandle() override {
     return Unimplemented(
         "PJRT C API does not support CreateDeviceToHostChannelHandle. Please "
-        "report an issue at https://github.com/google/jax/issues if you need "
-        "this feature.");
-  }
-
-  absl::StatusOr<ChannelHandle> CreateHostToDeviceChannelHandle() override {
-    return Unimplemented(
-        "PJRT C API does not support CreateHostToDeviceChannelHandle. Please "
         "report an issue at https://github.com/google/jax/issues if you need "
         "this feature.");
   }

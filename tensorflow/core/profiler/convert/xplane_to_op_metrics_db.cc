@@ -28,6 +28,10 @@ limitations under the License.
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/optional.h"
+#include "xla/tsl/profiler/utils/tf_op_utils.h"
+#include "xla/tsl/profiler/utils/tf_xplane_visitor.h"
+#include "xla/tsl/profiler/utils/timespan.h"
+#include "xla/tsl/profiler/utils/xplane_schema.h"
 #include "tensorflow/core/lib/gtl/map_util.h"
 #include "tensorflow/core/platform/logging.h"
 #include "tensorflow/core/platform/types.h"
@@ -41,10 +45,6 @@ limitations under the License.
 #include "tensorflow/core/profiler/utils/trace_utils.h"
 #include "tensorflow/core/profiler/utils/xplane_schema.h"
 #include "tensorflow/core/profiler/utils/xplane_visitor.h"
-#include "tsl/profiler/utils/tf_op_utils.h"
-#include "tsl/profiler/utils/tf_xplane_visitor.h"
-#include "tsl/profiler/utils/timespan.h"
-#include "tsl/profiler/utils/xplane_schema.h"
 
 namespace tensorflow {
 namespace profiler {
@@ -227,8 +227,6 @@ OpMetricsDb ConvertTpuDeviceTraceXPlaneToOpMetricsDb(
   XPlaneVisitor plane = tsl::profiler::CreateTfXPlaneVisitor(&device_trace);
   using OpMetricBySymbol =
       absl::flat_hash_map</*symbol_id=*/uint64_t, OpMetrics>;
-  absl::flat_hash_map</*program_id=*/uint64_t, OpMetricBySymbol> flat_op_metric;
-
   XEventsOpMetricsDbBuilder builder;
 
   plane.ForEachLine([&](const XLineVisitor& line) {

@@ -32,6 +32,39 @@ cc_library(
 )
 
 cc_library(
+    name = "export_named_computations",
+    srcs = ["export_named_computations.cc"],
+    hdrs = ["export_named_computations.h"],
+    deps = [
+        "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:FuncDialect",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Pass",
+        "@llvm-project//mlir:Support",
+        "@llvm-project//mlir:TransformUtils",
+        "@shardy//shardy/dialect/sdy/ir:dialect",
+    ],
+)
+
+cc_library(
+    name = "import_backend_func_calls",
+    srcs = ["import_backend_func_calls.cc"],
+    hdrs = ["import_backend_func_calls.h"],
+    deps = [
+        "//xla/service/spmd/shardy:constants",
+        "//xla/service/spmd/shardy:utils",
+        "@com_google_absl//absl/log:check",
+        "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:FuncDialect",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Pass",
+        "@llvm-project//mlir:Support",
+        "@llvm-project//mlir:TransformUtils",
+        "@shardy//shardy/dialect/sdy/ir:dialect",
+    ],
+)
+
+cc_library(
     name = "import_constants",
     srcs = ["import_constants.cc"],
     hdrs = ["import_constants.h"],
@@ -48,21 +81,12 @@ cc_library(
 )
 
 cc_library(
-    name = "shard_map_import",
-    srcs = ["shard_map_import.cc"],
-    hdrs = ["shard_map_import.h"],
+    name = "open_while_free_vars_sharding",
+    srcs = ["open_while_free_vars_sharding.cc"],
+    hdrs = ["open_while_free_vars_sharding.h"],
     deps = [
-        "//xla:xla_data_proto_cc",
         "//xla/mlir_hlo",
-        "//xla/mlir_hlo:mhlo_passes",
-        "//xla/service/spmd/shardy:constants",
-        "@com_google_absl//absl/algorithm:container",
-        "@com_google_absl//absl/log",
-        "@com_google_absl//absl/log:check",
-        "@com_google_absl//absl/status",
-        "@com_google_absl//absl/status:statusor",
         "@llvm-project//llvm:Support",
-        "@llvm-project//mlir:CallOpInterfaces",
         "@llvm-project//mlir:FuncDialect",
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:Pass",
@@ -79,7 +103,7 @@ cc_library(
     deps = [
         ":convert_sharding_custom_calls",
         ":import_constants",
-        ":shard_map_import",
+        ":open_while_free_vars_sharding",
         "//xla/mlir_hlo:mhlo_passes",
         "@llvm-project//mlir:FuncDialect",
         "@llvm-project//mlir:Pass",

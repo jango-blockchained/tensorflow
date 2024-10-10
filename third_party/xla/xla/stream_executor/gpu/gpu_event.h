@@ -20,6 +20,7 @@ limitations under the License.
 
 #include "absl/status/status.h"
 #include "xla/stream_executor/event.h"
+#include "xla/stream_executor/gpu/context.h"
 #include "xla/stream_executor/gpu/gpu_types.h"
 
 namespace stream_executor {
@@ -30,7 +31,7 @@ class GpuContext;
 // GpuEvent wraps a GpuEventHandle in the platform-independent Event interface.
 class GpuEvent : public Event {
  public:
-  explicit GpuEvent(GpuContext* context);
+  explicit GpuEvent(Context* context);
 
   ~GpuEvent() override;
 
@@ -41,20 +42,15 @@ class GpuEvent : public Event {
   // out (not part of the destructor) to allow for error reporting.
   absl::Status Destroy();
 
-  // Inserts the event at the current position into the specified stream.
-  absl::Status Record(GpuStreamHandle stream_handle);
-
   // The underlying CUDA event element.
   GpuEventHandle gpu_event();
 
-  absl::Status WaitForEventOnExternalStream(std::intptr_t stream) override;
-
  protected:
-  GpuContext* context() const { return context_; }
+  Context* context() const { return context_; }
 
  private:
   // The Executor used to which this object and GpuEventHandle are bound.
-  GpuContext* context_;
+  Context* context_;
 
   // The underlying CUDA event element.
   GpuEventHandle gpu_event_;

@@ -19,13 +19,13 @@ limitations under the License.
 #define XLA_HLO_IR_HLO_INSTRUCTIONS_H_
 
 #include <cstdint>
-#include <list>
 #include <memory>
 #include <optional>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "absl/base/attributes.h"
 #include "absl/container/inlined_vector.h"
 #include "absl/functional/function_ref.h"
 #include "absl/status/status.h"
@@ -38,15 +38,14 @@ limitations under the License.
 #include "xla/hlo/ir/hlo_domain_metadata.h"
 #include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/hlo/ir/hlo_opcode.h"
-#include "xla/iterator_util.h"
 #include "xla/layout.h"
 #include "xla/literal.h"
 #include "xla/printer.h"
 #include "xla/service/hlo.pb.h"
 #include "xla/shape.h"
 #include "xla/shape_util.h"
+#include "xla/tsl/lib/gtl/iterator_range.h"
 #include "xla/xla_data.pb.h"
-#include "tsl/lib/gtl/iterator_range.h"
 #include "tsl/platform/logging.h"  // IWYU pragma: keep
 #include "tsl/platform/status.h"
 
@@ -1440,7 +1439,8 @@ class HloCallableInstruction : public HloInstruction {
 class HloFusionInstruction : public HloCallableInstruction {
  public:
   explicit HloFusionInstruction(const Shape& shape, FusionKind fusion_kind,
-                                HloInstruction* fused_root);
+                                HloInstruction* fused_root,
+                                absl::string_view prefix = "");
 
   explicit HloFusionInstruction(const Shape& shape, FusionKind fusion_kind,
                                 absl::Span<HloInstruction* const> operands,
@@ -1474,7 +1474,7 @@ class HloFusionInstruction : public HloCallableInstruction {
   void MergeFusionInstruction(HloFusionInstruction* instruction_to_merge);
 
   // Merges the fused instructions from instruction_to_merge into the fused
-  // instruction set of 'this' and generates multioutput fusion instructions.
+  // instruction set of 'this' and generates multi-output fusion instructions.
   // All the users of instruction_to_merge will be redirected to 'this'
   // instruction. instruction_to_merge will be removed from its parent
   // computation.

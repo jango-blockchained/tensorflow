@@ -15,6 +15,11 @@ limitations under the License.
 
 #include "xla/hlo/ir/hlo_instruction.h"
 
+#include <cstddef>
+#include <cstdint>
+#include <initializer_list>
+#include <limits>
+#include <memory>
 #include <optional>
 #include <set>
 #include <string>
@@ -22,16 +27,23 @@ limitations under the License.
 #include <vector>
 
 #include "absl/container/flat_hash_map.h"
+#include "absl/status/status.h"
+#include "absl/strings/string_view.h"
+#include "xla/comparison_util.h"
+#include "xla/hlo/ir/collective_device_list.h"
 #include "xla/hlo/ir/dfs_hlo_visitor_with_default.h"
 #include "xla/hlo/ir/hlo_casting_utils.h"
 #include "xla/hlo/ir/hlo_computation.h"
 #include "xla/hlo/ir/hlo_instructions.h"
 #include "xla/hlo/ir/hlo_opcode.h"
-#include "xla/literal.h"
+#include "xla/hlo/ir/hlo_sharding.h"
+#include "xla/layout_util.h"
+#include "xla/literal_util.h"
 #include "xla/protobuf_util.h"
 #include "xla/service/gpu/backend_configs.pb.h"
 #include "xla/service/pattern_matcher.h"
 #include "xla/service/pattern_matcher_gmock.h"
+#include "xla/shape.h"
 #include "xla/shape_util.h"
 #include "xla/test.h"
 #include "xla/test_helpers.h"
@@ -40,6 +52,7 @@ limitations under the License.
 #include "xla/util.h"
 #include "xla/window_util.h"
 #include "xla/xla_data.pb.h"
+#include "tsl/platform/statusor.h"
 
 namespace xla {
 namespace {
@@ -2706,6 +2719,16 @@ TEST_F(HloInstructionTest, VerifyBodyComputationPointsToWhile) {
     }
   }
   EXPECT_EQ(num_while_body_comp, 1);
+
+  for (HloInstruction* instruction :
+       module->entry_computation()->instructions()) {
+    if (instruction->opcode() == HloOpcode::kWhile) {
+      HloComputation* while_body = instruction->while_body();
+      EXPECT_TRUE(while_body->IsWhileBodyComputation());
+      HloInstruction* while_back_ref = while_body->WhileCallInstruction();
+      EXPECT_EQ(while_back_ref->while_body(), while_body);
+    }
+  }
 }
 
 TEST_F(HloInstructionTest,
@@ -2752,7 +2775,7 @@ TEST_F(HloInstructionTest,
 
   module->AddEntryComputation(main_builder.Build());
   // Should find conditional branch computations in the graph and it should
-  // point to the conditonal instruction.
+  // point to the conditional instruction.
   int num_conditional_branch_comp = 0;
   for (HloComputation* comp : module->MakeComputationPostOrder()) {
     if (comp->IsConditionalBranchComputation()) {
@@ -2827,7 +2850,7 @@ TEST_F(HloInstructionTest,
 
   module->AddEntryComputation(main_builder.Build());
   // Should find conditional branch computations in the graph and it should
-  // point to the conditonal instruction.
+  // point to the conditional instruction.
   int num_conditional_branch_comp = 0;
   for (HloComputation* comp : module->MakeComputationPostOrder()) {
     if (comp->IsConditionalBranchComputation()) {
@@ -3033,6 +3056,105 @@ TEST_F(HloInstructionTest,
               GmockMatch(m::Tuple(m::Multiply(m::Parameter(0), m::Parameter(1)),
                                   m::Parameter(1),
                                   m::Add(m::Parameter(0), m::Parameter(1)))));
+}
+
+TEST_F(HloInstructionTest, UnfuseInstruction) {
+  const std::string& hlo_string = R"(
+    HloModule mof
+    fusion_comp {
+      param0 = f32[10]{0} parameter(0)
+      param1 = f32[10]{0} parameter(1)
+      add = f32[10]{0} add(param0, param1)
+      ROOT res = (f32[10]{0}, f32[10]{0}) tuple(param1, add)
+    }
+
+    ENTRY main {
+      p0 = f32[10]{0} parameter(0)
+      p1 = f32[10]{0} parameter(1)
+      fusion.1 = (f32[10]{0}, f32[10]{0}) fusion(p0, p1), kind=kLoop, calls=fusion_comp
+      gte0 = f32[10]{0} get-tuple-element(fusion.1), index=0
+      gte1 = f32[10]{0} get-tuple-element(fusion.1), index=1
+      ROOT res = (f32[10]{0}, f32[10]{0}) tuple(gte0, gte1)
+    }
+  )";
+
+  TF_ASSERT_OK_AND_ASSIGN(std::unique_ptr<HloModule> module,
+                          ParseAndReturnVerifiedModule(hlo_string));
+  HloInstruction* fusion = FindInstruction(module.get(), "fusion.1");
+  HloInstruction* add = fusion->fused_instructions_computation()
+                            ->root_instruction()
+                            ->mutable_operand(1);
+  TF_ASSERT_OK_AND_ASSIGN(auto unfused, fusion->UnfuseInstruction(add));
+  EXPECT_THAT(unfused, GmockMatch(m::Add(m::Parameter(0), m::Parameter(1))));
+}
+
+TEST_F(HloInstructionTest, UnfuseInstruction2) {
+  const std::string& hlo_string = R"(
+    HloModule mof
+    fusion_comp {
+      param0 = f32[10]{0} parameter(0)
+      param1 = f32[10]{0} parameter(1)
+      add = f32[10]{0} add(param0, param1)
+      add2 = f32[10]{0} add(add, param1)
+      ROOT res = (f32[10]{0}, f32[10]{0}) tuple(param1, add2)
+    }
+
+    ENTRY main {
+      p0 = f32[10]{0} parameter(0)
+      p1 = f32[10]{0} parameter(1)
+      fusion.1 = (f32[10]{0}, f32[10]{0}) fusion(p0, p1), kind=kLoop, calls=fusion_comp
+      gte0 = f32[10]{0} get-tuple-element(fusion.1), index=0
+      gte1 = f32[10]{0} get-tuple-element(fusion.1), index=1
+      ROOT res = (f32[10]{0}, f32[10]{0}) tuple(gte0, gte1)
+    }
+  )";
+
+  TF_ASSERT_OK_AND_ASSIGN(std::unique_ptr<HloModule> module,
+                          ParseAndReturnVerifiedModule(hlo_string));
+  HloInstruction* fusion = FindInstruction(module.get(), "fusion.1");
+  HloInstruction* add2 = fusion->fused_instructions_computation()
+                             ->root_instruction()
+                             ->mutable_operand(1);
+  HloInstruction* add = add2->mutable_operand(0);
+
+  // add2 is not unfusable since it has non-const non-parameter operands.
+  EXPECT_FALSE(fusion->UnfuseInstruction(add2).ok());
+
+  TF_ASSERT_OK_AND_ASSIGN(auto unfused, fusion->UnfuseInstruction(add));
+  EXPECT_THAT(unfused, GmockMatch(m::Add(m::Parameter(0), m::Parameter(1))));
+}
+
+TEST_F(HloInstructionTest, UnfuseInstructionWithConstantOperand) {
+  const std::string& hlo_string = R"(
+    HloModule mof
+    fusion_comp {
+      param0 = f32[10]{0} parameter(0)
+      param1 = f32[10]{0} parameter(1)
+      const = f32[] constant(1.0)
+      broadcast = f32[10]{0} broadcast(const), dimensions={}
+      add = f32[10]{0} add(param0, broadcast)
+      ROOT res = (f32[10]{0}, f32[10]{0}) tuple(param1, add)
+    }
+
+    ENTRY main {
+      p0 = f32[10]{0} parameter(0)
+      p1 = f32[10]{0} parameter(1)
+      fusion.1 = (f32[10]{0}, f32[10]{0}) fusion(p0, p1), kind=kLoop, calls=fusion_comp
+      gte0 = f32[10]{0} get-tuple-element(fusion.1), index=0
+      gte1 = f32[10]{0} get-tuple-element(fusion.1), index=1
+      ROOT res = (f32[10]{0}, f32[10]{0}) tuple(gte0, gte1)
+    }
+  )";
+
+  TF_ASSERT_OK_AND_ASSIGN(std::unique_ptr<HloModule> module,
+                          ParseAndReturnVerifiedModule(hlo_string));
+  HloInstruction* fusion = FindInstruction(module.get(), "fusion.1");
+  HloInstruction* add = fusion->fused_instructions_computation()
+                            ->root_instruction()
+                            ->mutable_operand(1);
+  TF_ASSERT_OK_AND_ASSIGN(auto unfused, fusion->UnfuseInstruction(add));
+  EXPECT_THAT(unfused,
+              GmockMatch(m::Add(m::Parameter(0), m::Broadcast(m::Constant()))));
 }
 
 }  // namespace

@@ -406,12 +406,8 @@ TEST_F(SymbolicTileTest, CanPropagateTileThroughDynamicSlice) {
         size_map: (d0, d1, d2) -> (1, d1, d2)
         stride_map: (d0, d1, d2) -> (0, 1, 1)
         rt_vars:
-          s0 in [0, 1]
-            hlo: %of1 = s32[] parameter(1)
-            (d0, d1, d2) -> ()
-          s1 in [0, 226]
-            hlo: %of3 = s32[] parameter(3)
-            (d0, d1, d2) -> ()
+          s0 in [0, 1],
+          s1 in [0, 226],
       )")));
   for (int i = 1; i <= 3; i++) {
     EXPECT_THAT(
@@ -458,12 +454,8 @@ TEST_F(SymbolicTileTest, CanPropagateTileThroughDynamicUpdateSlice) {
         size_map: (d0, d1) -> (d0, d1)
         stride_map: (d0, d1) -> (1, 1)
         rt_vars:
-          s0 in [0, 15]
-            hlo: %of1 = s32[] parameter(2)
-            (d0, d1) -> ()
-          s1 in [0, 20]
-            hlo: %of2 = s32[] parameter(3)
-            (d0, d1) -> ()
+          s0 in [0, 15],
+          s1 in [0, 20],
       )")));
   for (int i = 2; i <= 3; i++) {
     EXPECT_THAT(
@@ -501,12 +493,8 @@ TEST_F(SymbolicTileTest, CanPropagateTileThroughGather) {
         size_map: (d0, d1, d2, d3) -> (d1, d2, d3)
         stride_map: (d0, d1, d2, d3) -> (1, 1, 1)
         rt_vars:
-          s0 in [0, 26]
-            hlo: %indices = s32[1806,2]{1,0} parameter(1)
-            (d0, d1, d2, d3) -> (d0, 0)
-          s1 in [0, 68]
-            hlo: %indices = s32[1806,2]{1,0} parameter(1)
-            (d0, d1, d2, d3) -> (d0, 1)
+          s0 in [0, 26],
+          s1 in [0, 68],
       )")));
 
   EXPECT_THAT(
@@ -546,6 +534,61 @@ TEST_F(SymbolicTileTest, CanPropagateTileThroughSplitReshapeOfReverse) {
         size_map: (d0, d1) ->
           (1, (d0 + 5) floordiv 6, d0 - ((d0 - 1) floordiv 6) * 6, d1)
         stride_map: (d0, d1) -> (0, 1, 1, 1)
+      )")));
+}
+
+TEST_F(SymbolicTileTest, CanPropagateTileThroughSplitReductionOfSplittedAxis) {
+  // A split reshape of a reverse creates a sum of strided symbols.
+  auto input_indexing = GetOutputToInputIndexing(ParseAndGetRoot(R"(
+    HloModule m
+    add {
+      p0 = f32[] parameter(0)
+      p1 = f32[] parameter(1)
+      ROOT add = f32[] add(p0, p1)
+    }
+
+    computation {
+      p0 = f32[18] parameter(0)
+      bitcast = f32[9,2] bitcast(p0)
+      c0 = f32[] constant(0)
+      reduce_0 = f32[9] reduce(bitcast, c0), dimensions={1}, to_apply=add
+      ROOT reduce_1 = f32[] reduce(reduce_0, c0), dimensions={0}, to_apply=add
+    }
+
+    ENTRY e {
+      p0 = f32[18] parameter(0)
+      ROOT fusion = f32[] fusion(p0), kind=kLoop, calls=computation
+    }
+  )"));
+
+  EXPECT_THAT(
+      SymbolicTile::FromIndexingMap(*input_indexing.indexing_maps[0].begin()),
+      Optional(MatchSymbolicTileString(R"(
+      Symbolic tile with
+        offset_map: () -> (0)
+        size_map: () -> (18)
+        stride_map: () -> (1)
+      )")));
+}
+
+TEST_F(SymbolicTileTest, CanPropagateTileThroughSummationOfSymbols) {
+  // Such an indexing map is representative of a sequence of HLOs containing a
+  // bitcast followed by two sequential reductions of the split axis, i.e.
+  // something like
+  //   p0 = f32[18] parameter(0)
+  //   bitcast = f32[9,2] bitcast(p0)
+  //   reduce_0 = f32[9] reduce(bitcast), dimensions={1}
+  //   reduce_1 = f32[] reduce(reduce_0), dimensions={0}
+  IndexingMap indexing_map = IndexingMap::FromTensorSizes(
+      ParseAffineMap("()[s0, s1] -> (s1 * 2 + s0)", &mlir_context_), {},
+      {2, 9});
+
+  EXPECT_THAT(SymbolicTile::FromIndexingMap(indexing_map),
+              Optional(MatchSymbolicTileString(R"(
+      Symbolic tile with
+        offset_map: () -> (0)
+        size_map: () -> (18)
+        stride_map: () -> (1)
       )")));
 }
 
@@ -1161,6 +1204,38 @@ TEST_F(ConstraintExpressionTest, SimplifyRemovesRedundantConstraints) {
   // that yet.
   EXPECT_THAT(constraints, MatchConstraintExpressionString(
                                "d0 in [0, 0] || d0 in [0, 0] && d1 in [1, 1]"));
+}
+
+TEST_F(ConstraintExpressionTest, ConstraintSatisfactionIsEvaluatedCorrectly) {
+  Constraint c0 = GetConstraint("d0 mod 6", 0, 0);
+  Constraint c1 = GetConstraint("d1 mod 8", 0, 0);
+  Constraint c2 = GetConstraint("d0 mod 13", 0, 0);
+
+  ConjointConstraints conjunction_0{c0, c1};
+  ConjointConstraints conjunction_1{c1, c2};
+
+  ConstraintExpression constraints;
+  constraints.Or(conjunction_0);
+  constraints.Or(conjunction_1);
+
+  // Parameters {6, 8} satisfy these constraints.
+  std::vector<int64_t> possible_tile_parameters({6, 8});
+  EXPECT_TRUE(constraints.IsSatisfiedBy(possible_tile_parameters));
+
+  // Parameters {13, 8} should also satisfy these constraints.
+  std::vector<int64_t> other_possible_tile_parameters({13, 8});
+  EXPECT_TRUE(constraints.IsSatisfiedBy(other_possible_tile_parameters));
+
+  // However, tile sizes {6, 7} do not satisfy these constraints.
+  std::vector<int64_t> impossible_tile_parameters({6, 7});
+  EXPECT_FALSE(constraints.IsSatisfiedBy(impossible_tile_parameters));
+
+  // Anything satisfies an always satisfied constraint expression.
+  EXPECT_TRUE(ConstraintExpression().IsSatisfiedBy(impossible_tile_parameters));
+
+  // Nothing satisfies an unsatisfiable constraint expression.
+  EXPECT_FALSE(ConstraintExpression::GetUnsatisfiableConstraintExpression()
+                   .IsSatisfiedBy(possible_tile_parameters));
 }
 
 }  // namespace

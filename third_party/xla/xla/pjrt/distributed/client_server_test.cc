@@ -39,6 +39,7 @@ limitations under the License.
 #include "grpcpp/server_builder.h"
 #include "grpcpp/support/channel_arguments.h"
 #include "xla/pjrt/distributed/client.h"
+#include "xla/pjrt/distributed/distributed.h"
 #include "xla/pjrt/distributed/protocol.pb.h"
 #include "xla/pjrt/distributed/service.h"
 #include "xla/pjrt/distributed/topology_util.h"
@@ -379,13 +380,15 @@ TEST_F(ClientServerTest, ZeroInitTimeoutShouldStillWaitForOtherTasks) {
   }
 }
 
-TEST_F(ClientServerTest, ClientsTerminateShutdownIfAnyClientGoesAway) {
+TEST_F(ClientServerTest,
+       ClientsTerminateShutdownIfAnyClientGoesAway_WithoutErrorPolling) {
   int num_nodes = 3;
   StartService(num_nodes);
 
   auto thread_fn = [&](int node_id) -> absl::Status {
     DistributedRuntimeClient::Options client_options;
     client_options.shutdown_on_destruction = node_id != 0;
+    client_options.poll_for_error_from_service_at_startup = false;
     client_options.missed_heartbeat_callback =
         [&](absl::Status status, bool coordinator_initiated) {};
     auto client = GetClient(node_id, client_options);
@@ -424,7 +427,76 @@ TEST_F(ClientServerTest, ClientsTerminateShutdownIfAnyClientGoesAway) {
   }
 }
 
-TEST_F(ClientServerTest, ClientsReceiveMissedHeartbeatIfAnyClientGoesAway) {
+TEST_F(ClientServerTest, ClientsTerminateShutdownIfAnyClientGoesAway) {
+  int num_nodes = 3;
+  StartService(num_nodes);
+
+  auto thread_fn = [&](int node_id) -> absl::Status {
+    DistributedRuntimeClient::Options client_options;
+    client_options.shutdown_on_destruction = node_id != 0;
+    client_options.missed_heartbeat_callback =
+        [&](absl::Status status, bool coordinator_initiated) {};
+    auto client = GetClient(node_id, client_options);
+
+    TF_RETURN_IF_ERROR(client->Connect());
+
+    if (node_id == 0) {
+      return absl::OkStatus();
+    }
+
+    // The call to Shutdown() should be interrupted if a worker stops issuing
+    // heartbeats.
+    return client->Shutdown();
+  };
+
+  std::vector<absl::Status> statuses(num_nodes);
+  {
+    tsl::thread::ThreadPool thread_pool(tsl::Env::Default(), "test_threads",
+                                        num_nodes);
+    for (int i = 0; i < num_nodes; ++i) {
+      thread_pool.Schedule([&, i]() { statuses[i] = thread_fn(i); });
+    }
+  }
+  TF_EXPECT_OK(statuses[0]);
+  for (int i = 1; i < num_nodes; ++i) {
+    // The error type depends on whether the node turns into ERROR state during
+    // or before the shutdown call.
+    EXPECT_TRUE(absl::IsInternal(statuses[i]) ||
+                absl::IsFailedPrecondition(statuses[i]));
+  }
+}
+
+TEST_F(ClientServerTest, ClientsShutdownSuccessfully) {
+  int num_nodes = 3;
+  StartService(num_nodes);
+
+  auto thread_fn = [&](int node_id) -> absl::Status {
+    DistributedRuntimeClient::Options client_options;
+    client_options.shutdown_on_destruction = true;
+    client_options.missed_heartbeat_callback =
+        [&](absl::Status status, bool coordinator_initiated) {};
+    auto client = GetClient(node_id, client_options);
+
+    TF_RETURN_IF_ERROR(client->Connect());
+    return client->Shutdown();
+    // The error polling request will be cancelled automatically when the
+    // client is shutting down.
+  };
+
+  std::vector<absl::Status> statuses(num_nodes);
+  {
+    tsl::thread::ThreadPool thread_pool(tsl::Env::Default(), "test_threads",
+                                        num_nodes);
+    for (int i = 0; i < num_nodes; ++i) {
+      thread_pool.Schedule([&, i]() { statuses[i] = thread_fn(i); });
+    }
+  }
+  for (int i = 0; i < num_nodes; ++i) {
+    TF_EXPECT_OK(statuses[i]);
+  }
+}
+
+TEST_F(ClientServerTest, MissedHeartbeatCallbackIsExecutedIfAnyClientGoesAway) {
   int num_nodes = 3;
   StartService(num_nodes);
 
@@ -436,6 +508,44 @@ TEST_F(ClientServerTest, ClientsReceiveMissedHeartbeatIfAnyClientGoesAway) {
                                                    bool coordinator_initiated) {
       shutdown.Notify();
     };
+    auto client = GetClient(node_id, client_options);
+
+    TF_RETURN_IF_ERROR(client->Connect());
+
+    if (node_id == 0) {
+      return absl::OkStatus();
+    }
+    shutdown.WaitForNotification();
+    return absl::OkStatus();
+  };
+
+  std::vector<absl::Status> statuses(num_nodes);
+  {
+    tsl::thread::ThreadPool thread_pool(tsl::Env::Default(), "test_threads",
+                                        num_nodes);
+    for (int i = 0; i < num_nodes; ++i) {
+      thread_pool.Schedule([&, i]() { statuses[i] = thread_fn(i); });
+    }
+  }
+  for (int i = 0; i < num_nodes; ++i) {
+    TF_EXPECT_OK(statuses[i]);
+  }
+}
+
+TEST_F(ClientServerTest,
+       ClientsReceiveMissedHeartbeatIfAnyClientGoesAway_WithoutErrorPolling) {
+  int num_nodes = 3;
+  StartService(num_nodes);
+
+  auto thread_fn = [&](int node_id) -> absl::Status {
+    DistributedRuntimeClient::Options client_options;
+    client_options.shutdown_on_destruction = (node_id != 0);
+    absl::Notification shutdown;
+    client_options.missed_heartbeat_callback = [&](absl::Status status,
+                                                   bool coordinator_initiated) {
+      shutdown.Notify();
+    };
+    client_options.poll_for_error_from_service_at_startup = false;
     auto client = GetClient(node_id, client_options);
 
     TF_RETURN_IF_ERROR(client->Connect());
@@ -480,10 +590,9 @@ TEST_F(ClientServerTest, ClientsTerminateIfServiceGoesAway) {
                                                    bool coordinator_initiated) {
       shutdown.Notify();
     };
-    std::shared_ptr<::grpc::ChannelCredentials> creds =
-        ::grpc::InsecureChannelCredentials();
-    std::shared_ptr<::grpc::Channel> channel =
-        ::grpc::CreateChannel(absl::StrCat("dns:///localhost:", port), creds);
+    auto channel = GetDistributedRuntimeClientChannel(
+        absl::StrCat("dns:///localhost:", port),
+        ::grpc::InsecureChannelCredentials());
     auto client = GetClient(node_id, client_options, channel);
 
     TF_RETURN_IF_ERROR(client->Connect());
@@ -885,6 +994,22 @@ TEST_F(ClientServerTest, KeyValueDelete_Directory) {
   auto kvs = client->KeyValueDirGet("test_dir/");
   TF_ASSERT_OK(kvs.status());
   EXPECT_THAT(kvs.value(), IsEmpty());
+}
+
+TEST_F(ClientServerTest, UseCompression) {
+  int port = tsl::testing::PickUnusedPortOrDie();
+  StartService(/*num_nodes=*/1, /*service_options=*/{},
+               absl::StrCat("[::]:", port));
+
+  // Sanity check that the client can connect with compression enabled.
+  auto channel = GetDistributedRuntimeClientChannel(
+      absl::StrCat("dns:///localhost:", port),
+      ::grpc::InsecureChannelCredentials(), /*use_compression=*/true);
+  auto client = GetClient(/*node_id=*/0, {}, channel);
+
+  TF_ASSERT_OK(client->Connect());
+  TF_ASSERT_OK(client->KeyValueSet("foo/bar/1", "1"));
+  TF_ASSERT_OK(client->Shutdown());
 }
 
 }  // namespace

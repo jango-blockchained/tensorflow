@@ -29,13 +29,14 @@ cc_library(
     visibility = [
         "//tensorflow/compiler/mlir/lite:__subpackages__",
         "//tensorflow/lite/core:__pkg__",
+        "//tensorflow/lite/experimental/lrt:__subpackages__",
     ],
     deps = [
         ":macros",
+        "//tensorflow/compiler/mlir/lite:allocation",
+        "//tensorflow/compiler/mlir/lite/core/api:error_reporter",
+        "//tensorflow/compiler/mlir/lite/core/api:verifier",
         "//tensorflow/compiler/mlir/lite/schema:schema_fbs",
-        "//tensorflow/lite:allocation",
-        "//tensorflow/lite/core/api:error_reporter",
-        "//tensorflow/lite/core/api:verifier",
         "@com_google_absl//absl/strings",
         "@flatbuffers",
     ],
@@ -48,12 +49,10 @@ cc_library(
     hdrs = ["absl_error_model_builder.h"],
     compatible_with = get_compatible_with_portable(),
     copts = tflite_copts_warnings(),
-    visibility = [
-        "//tensorflow/compiler/mlir/lite:__subpackages__",
-    ],
+    visibility = ["//visibility:public"],
     deps = [
         ":model_builder_base",
-        "//tensorflow/lite/core/api:error_reporter",
+        "//tensorflow/compiler/mlir/lite/core/api:error_reporter",
         "@com_google_absl//absl/log",
     ],
 )

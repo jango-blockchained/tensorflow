@@ -197,9 +197,9 @@ cc_library(
         "@local_xla//xla:literal_util",
         "@local_xla//xla:shape_util",
         "@local_xla//xla:xla_data_proto_cc",
-        "@local_xla//xla/client:xla_builder",
-        "@local_xla//xla/client:xla_computation",
-        "@local_xla//xla/client/lib:slicing",
+        "@local_xla//xla/hlo/builder:xla_builder",
+        "@local_xla//xla/hlo/builder:xla_computation",
+        "@local_xla//xla/hlo/builder/lib:slicing",
         "@local_xla//xla/stream_executor/tpu:c_api_decl",
         "@local_xla//xla/stream_executor/tpu:tpu_api",
         "@local_xla//xla/stream_executor/tpu:tpu_ops_c_api_hdrs",
@@ -247,13 +247,13 @@ tf_kernel_library(
         "@local_tsl//tsl/platform:logging",
         "@local_tsl//tsl/platform:macros",
         "@local_tsl//tsl/platform:tstring",
-        "@local_tsl//tsl/protobuf:error_codes_proto_impl_cc",
         "@local_xla//xla:util",
         "@local_xla//xla/stream_executor",
         "@local_xla//xla/stream_executor/tpu:proto_helper",
         "@local_xla//xla/stream_executor/tpu:status_helper",
         "@local_xla//xla/stream_executor/tpu:tpu_api",
         "@local_xla//xla/stream_executor/tpu:tpu_ops_c_api_hdrs",
+        "@local_xla//xla/tsl/protobuf:error_codes_proto_impl_cc",
     ] + if_libtpu_tf_status(),
     alwayslink = 1,
 )
@@ -342,7 +342,6 @@ cc_library(
 tf_proto_library(
     name = "tpu_executable_info_proto",
     srcs = ["tpu_executable_info.proto"],
-    cc_api_version = 2,
     protodeps = [
         "@local_xla//xla:xla_data_proto",
         "@local_xla//xla/service:hlo_proto",
@@ -353,7 +352,6 @@ tf_proto_library(
 tf_proto_library(
     name = "tpu_compile_proto",
     srcs = ["tpu_compile.proto"],
-    cc_api_version = 2,
     protodeps = [
         ":tpu_executable_info_proto",
         "//tensorflow/compiler/tf2xla:host_compute_metadata_proto",
@@ -731,7 +729,6 @@ tf_proto_library(
     name = "tpu_compilation_cache_proto",
     srcs = ["tpu_compilation_cache.proto"],
     has_services = True,
-    cc_api_version = 2,
     create_java_proto = False,
     protodeps = [
         ":tpu_compilation_cache_common_proto",
@@ -742,7 +739,6 @@ tf_proto_library(
 tf_proto_library(
     name = "tpu_compilation_cache_common_proto",
     srcs = ["tpu_compilation_cache_common.proto"],
-    cc_api_version = 2,
     create_java_proto = False,
 )
 
@@ -841,7 +837,7 @@ cc_library(
         "@local_tsl//tsl/platform:errors",
         "@local_tsl//tsl/platform:logging",
         "@local_tsl//tsl/platform:statusor",
-        "@local_xla//xla/stream_executor/platform",
+        "@local_xla//xla/stream_executor/platform:initialize",
         "@local_xla//xla/stream_executor/tpu:tpu_ops_c_api_hdrs",
     ],
     alwayslink = 1,
@@ -863,9 +859,9 @@ cc_library(
         "@com_google_absl//absl/status:statusor",
         "@local_tsl//tsl/platform:logging",
         "@local_tsl//tsl/platform:tstring",
-        "@local_tsl//tsl/protobuf:error_codes_proto_impl_cc",
-        "@local_xla//xla/stream_executor/platform",
+        "@local_xla//xla/stream_executor/platform:initialize",
         "@local_xla//xla/stream_executor/tpu:tpu_node_context",
+        "@local_xla//xla/tsl/protobuf:error_codes_proto_impl_cc",
     ],
     alwayslink = True,
 )
@@ -963,7 +959,7 @@ cc_library(
         "@local_xla//xla:shape_util",
         "@local_xla//xla:util",
         "@local_xla//xla:xla_data_proto_cc",
-        "@local_xla//xla/client:xla_builder",
+        "@local_xla//xla/hlo/builder:xla_builder",
     ],
     alwayslink = 1,
 )
@@ -976,8 +972,8 @@ cc_library(
         "//tensorflow/compiler/tf2xla:xla_op_registry",
         "//tensorflow/core/tpu:tpu_defs",
         "@com_google_absl//absl/numeric:bits",
-        "@local_xla//xla/client:xla_builder",
-        "@local_xla//xla/client/lib:arithmetic",
+        "@local_xla//xla/hlo/builder:xla_builder",
+        "@local_xla//xla/hlo/builder/lib:arithmetic",
     ],
     alwayslink = 1,
 )
@@ -1007,7 +1003,7 @@ cc_library(
         "@local_xla//xla:literal_util",
         "@local_xla//xla:shape_util",
         "@local_xla//xla:xla_data_proto_cc",
-        "@local_xla//xla/client:xla_builder",
+        "@local_xla//xla/hlo/builder:xla_builder",
         "@local_xla//xla/stream_executor/tpu:c_api_conversions",
         "@local_xla//xla/stream_executor/tpu:c_api_decl",
         "@local_xla//xla/stream_executor/tpu:proto_helper",
@@ -1131,8 +1127,8 @@ cc_library(
         "@com_google_absl//absl/strings",
         "@local_tsl//tsl/platform:statusor",
         "@local_xla//xla:shape_util",
-        "@local_xla//xla/client:xla_builder",
-        "@local_xla//xla/client/lib:constants",
+        "@local_xla//xla/hlo/builder:xla_builder",
+        "@local_xla//xla/hlo/builder/lib:constants",
     ],
     alwayslink = True,
 )
@@ -1449,7 +1445,7 @@ tf_cc_test(
         "@com_google_absl//absl/types:span",
         "@com_google_googletest//:gtest",
         "@local_tsl//tsl/platform:errors",
-        "@local_tsl//tsl/protobuf:error_codes_proto_impl_cc",
+        "@local_xla//xla/tsl/protobuf:error_codes_proto_impl_cc",
     ],
 )
 
@@ -1546,7 +1542,6 @@ tf_proto_library(
     name = "sparse_core_layout_proto",
     srcs = ["sparse_core_layout.proto"],
     has_services = False,
-    cc_api_version = 2,
     create_go_proto = False,
     create_java_proto = False,
     create_kotlin_proto = False,
@@ -1556,7 +1551,6 @@ tf_proto_library(
 # copybara:uncomment_begin(google-only)
 # py_proto_library(
 #     name = "sparse_core_layout_py_pb2",
-#     api_version = 2,
 #     deps = [":sparse_core_layout_proto"],
 # )
 # copybara:uncomment_end

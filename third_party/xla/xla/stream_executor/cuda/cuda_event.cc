@@ -15,33 +15,40 @@ limitations under the License.
 
 #include "xla/stream_executor/cuda/cuda_event.h"
 
-#include "absl/log/log.h"
-#include "absl/status/statusor.h"
+#include <cstdint>
+
+#include "absl/base/casts.h"
+#include "absl/status/status.h"
 #include "third_party/gpus/cuda/include/cuda.h"
-#include "xla/stream_executor/cuda/cuda_driver.h"
+#include "xla/stream_executor/cuda/cuda_status.h"
 #include "xla/stream_executor/event.h"
+#include "xla/stream_executor/gpu/context.h"
+#include "xla/stream_executor/gpu/scoped_activate_context.h"
 
 namespace stream_executor {
 namespace gpu {
+namespace {
+absl::Status WaitStreamOnEvent(Context* context, CUstream stream,
+                               CUevent event) {
+  ScopedActivateContext activation(context);
+  return cuda::ToStatus(cuStreamWaitEvent(stream, event, 0 /* = flags */));
+}
+}  // namespace
 
 Event::Status CudaEvent::PollForStatus() {
-  absl::StatusOr<CUresult> status = QueryEvent(context(), gpu_event());
-  if (!status.ok()) {
-    LOG(ERROR) << "Error polling for event status: "
-               << status.status().message();
-    return Event::Status::kError;
+  ScopedActivateContext activated(context());
+  CUresult res = cuEventQuery(gpu_event());
+  if (res == CUDA_SUCCESS) {
+    return Event::Status::kComplete;
+  } else if (res == CUDA_ERROR_NOT_READY) {
+    return Event::Status::kPending;
   }
+  return Event::Status::kError;
+}
 
-  switch (status.value()) {
-    case CUDA_SUCCESS:
-      return Event::Status::kComplete;
-    case CUDA_ERROR_NOT_READY:
-      return Event::Status::kPending;
-    default:
-      LOG(INFO) << "Error condition returned for event status: "
-                << status.value();
-      return Event::Status::kError;
-  }
+absl::Status CudaEvent::WaitForEventOnExternalStream(std::intptr_t stream) {
+  return WaitStreamOnEvent(context(), absl::bit_cast<CUstream>(stream),
+                           gpu_event());
 }
 
 }  // namespace gpu

@@ -13,37 +13,29 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#include "xla/stream_executor/gpu/gpu_kernel.h"
+#include "xla/stream_executor/rocm/rocm_kernel.h"
+
+#include <cstddef>
+#include <cstdint>
+
+#include "absl/log/log.h"
+#include "absl/status/statusor.h"
+#include "xla/stream_executor/gpu/gpu_driver.h"
+#include "xla/stream_executor/launch_dim.h"
 
 namespace stream_executor {
 namespace gpu {
 
-hipFuncCache_t GpuKernel::GetGpuCacheConfig() const {
-  switch (cache_config()) {
-    case KernelCacheConfig::kNoPreference:
-      return hipFuncCachePreferNone;
-    case KernelCacheConfig::kPreferShared:
-      return hipFuncCachePreferShared;
-    case KernelCacheConfig::kPreferL1:
-      return hipFuncCachePreferL1;
-    case KernelCacheConfig::kPreferEqual:
-      return hipFuncCachePreferEqual;
-    default:
-      LOG(FATAL) << "Unknown KernelCacheConfig"
-                 << static_cast<int32>(cache_config());
-  }
-}
-
-absl::StatusOr<int32_t> GpuKernel::GetMaxOccupiedBlocksPerCore(
+absl::StatusOr<int32_t> RocmKernel::GetMaxOccupiedBlocksPerCore(
     ThreadDim threads, size_t dynamic_shared_memory_bytes) const {
   int32_t threads_per_block = threads.x * threads.y * threads.z;
-  VLOG(0) << "Get kernel block occupancy: " << name_
+  VLOG(0) << "Get kernel block occupancy: " << name()
           << "; threads_per_block: " << threads_per_block
           << "; dynamic_shared_memory_bytes: " << dynamic_shared_memory_bytes;
 
-  return GpuDriver::GetMaxOccupiedBlocksPerCore(gpu_context_, gpu_function_,
-                                                threads_per_block,
-                                                dynamic_shared_memory_bytes);
+  return GpuDriver::GetMaxOccupiedBlocksPerCore(
+      gpu_executor_->gpu_context(), rocm_function_, threads_per_block,
+      dynamic_shared_memory_bytes);
 }
 
 }  // namespace gpu

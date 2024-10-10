@@ -16,6 +16,7 @@
 
 import enum
 import functools
+import gc
 import pprint
 import shutil
 import sys
@@ -113,8 +114,8 @@ class Optimize(enum.Enum):
       The default optimization strategy that enables post-training quantization.
       The type of post-training quantization that will be used is dependent on
       the other converter options supplied. Refer to the
-      [documentation](/lite/performance/post_training_quantization) for further
-      information on the types available and how to use them.
+      [documentation](https://ai.google.dev/edge/litert/models/post_training_quantization)
+      for further information on the types available and how to use them.
 
   OPTIMIZE_FOR_SIZE
       Deprecated. Does the same as DEFAULT.
@@ -674,6 +675,8 @@ class TFLiteConverterBase:
     self._experimental_qdq_conversion_mode = None
     self._experimental_disable_per_channel_quantization_for_dense_layers = False
     self._experimental_enable_composite_direct_lowering = False
+    self.model_origin_framework = constants.UNSET
+    self.canonicalizing_inf_as_min_max_float = True
 
     # Debug parameters
     self.ir_dump_dir = None
@@ -789,7 +792,6 @@ class TFLiteConverterBase:
         "allow_custom_ops": self.allow_custom_ops,
         "debug_info": self._debug_info,
         "target_ops": self.target_spec.supported_ops,
-        "enable_mlir_converter": self.experimental_new_converter,
         "select_user_tf_ops": self.target_spec.experimental_select_user_tf_ops,
         "supported_backends": self.target_spec.experimental_supported_backends,
         "unfold_batchmatmul": self.unfold_batchmatmul,
@@ -835,6 +837,10 @@ class TFLiteConverterBase:
         ),
         "enable_composite_direct_lowering": (
             self._experimental_enable_composite_direct_lowering
+        ),
+        "model_origin_framework": self.model_origin_framework,
+        "canonicalizing_inf_as_min_max_float": (
+            self.canonicalizing_inf_as_min_max_float
         ),
     }
 
@@ -1549,16 +1555,19 @@ class TFLiteSavedModelConverterV2(TFLiteConverterBaseV2):
           graph_def, input_tensors, output_tensors
       )
 
-    if self._trackable_obj is None:
+    trackable_obj = _load(self.saved_model_dir, self._saved_model_tags)
+    if trackable_obj is None:
       self._debug_info = _get_debug_info(
           _build_debug_info_func(self._funcs[0].graph), graph_def
       )
     else:
       self._debug_info = _get_debug_info(
-          _convert_debug_info_func(self._trackable_obj.graph_debug_info),
+          _convert_debug_info_func(trackable_obj.graph_debug_info),
           graph_def,
       )
 
+    del trackable_obj
+    gc.collect()
     return self._convert_from_saved_model(graph_def)
 
 
@@ -2261,7 +2270,7 @@ class TFLiteConverterV2(TFLiteFrozenGraphConverterV2):
       funcs.append(saved_model.signatures[key])
 
     saved_model_converter = TFLiteSavedModelConverterV2(
-        saved_model_dir, tags, signature_keys, saved_model
+        saved_model_dir, tags, signature_keys
     )
     if saved_model_converter.saved_model_dir:
       return saved_model_converter

@@ -10,6 +10,7 @@ package_group(
     name = "friends",
     packages = [
         # Authorized users go here.
+        # copybara:uncomment "//cloud/ai/platform/prediction/...",
         # copybara:uncomment "//learning/brain/experimental/tfrt/...",
         # copybara:uncomment "//learning/brain/tfrt/...",
         # copybara:uncomment "//learning/infra/mira/...",
@@ -135,6 +136,8 @@ cc_library(
         "//tensorflow/core/tfrt/graph_executor",
         "//tensorflow/core/tfrt/graph_executor:export_mlir",
         "//tensorflow/core/tfrt/graph_executor:graph_execution_options",
+        "//tensorflow/core/tfrt/ifrt:checkpoint_loader",
+        "//tensorflow/core/tfrt/ifrt:ifrt_model_restore_context",
         "//tensorflow/core/tfrt/mlrt/bytecode",
         "//tensorflow/core/tfrt/mlrt/bytecode:executable",
         "//tensorflow/core/tfrt/mlrt/interpreter:context",
