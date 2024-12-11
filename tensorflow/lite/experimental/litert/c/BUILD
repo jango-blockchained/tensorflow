@@ -90,6 +90,7 @@ cc_test(
         "//tensorflow/lite/experimental/litert/cc:litert_layout",
         "//tensorflow/lite/experimental/litert/core/model",
         "//tensorflow/lite/experimental/litert/test:common",
+        "//tensorflow/lite/experimental/litert/test:test_macros",
         "//tensorflow/lite/schema:schema_fbs",
         "@com_google_absl//absl/strings:string_view",
         "@com_google_absl//absl/types:span",
@@ -207,11 +208,21 @@ cc_library(
 )
 
 cc_library(
+    name = "litert_compiled_model_options",
+    hdrs = [
+        "litert_compiled_model_options.h",
+    ],
+)
+
+cc_library(
     name = "litert_compiled_model",
     srcs = ["litert_compiled_model.cc"],
-    hdrs = ["litert_compiled_model.h"],
+    hdrs = [
+        "litert_compiled_model.h",
+    ],
     deps = [
         ":litert_common",
+        ":litert_compiled_model_options",
         ":litert_logging",
         ":litert_model",
         ":litert_tensor_buffer",
@@ -232,10 +243,9 @@ cc_test(
     deps = [
         ":litert_common",
         ":litert_compiled_model",
+        ":litert_compiled_model_options",
         ":litert_model",
         ":litert_tensor_buffer",
-        "//tensorflow/lite/experimental/litert/cc:litert_model",
-        "//tensorflow/lite/experimental/litert/test:common",
         "@com_google_absl//absl/strings:string_view",
         "@com_google_googletest//:gtest_main",
     ],
