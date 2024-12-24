@@ -13,11 +13,19 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#include "xla/hlo/evaluator/hlo_evaluator.h"
-#include "xla/hlo/evaluator/hlo_evaluator_typed_visitor.h"
-#include "tsl/platform/ml_dtypes.h"
+#ifndef XLA_BACKENDS_CPU_XNN_EMITTER_H_
+#define XLA_BACKENDS_CPU_XNN_EMITTER_H_
 
-namespace xla {
-template class HloEvaluatorTypedVisitor<tsl::float4_e2m1fn, float>;
-template class HloEvaluatorTypedVisitor<tsl::float8_e8m0fnu, float>;
-}  // namespace xla
+#include "xnnpack.h"
+#include "absl/functional/any_invocable.h"
+#include "absl/status/statusor.h"
+#include "xla/hlo/ir/hlo_computation.h"
+
+namespace xla::cpu {
+
+absl::StatusOr<absl::AnyInvocable<absl::StatusOr<xnn_subgraph_t>()>>
+EmitXnnFusionBuilder(const HloComputation* computation);
+
+}  // namespace xla::cpu
+
+#endif  // XLA_BACKENDS_CPU_XNN_EMITTER_H_
