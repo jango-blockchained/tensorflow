@@ -46,6 +46,7 @@ limitations under the License.
 #include "nanobind/stl/unique_ptr.h"  // IWYU pragma: keep
 #include "nanobind/stl/variant.h"  // IWYU pragma: keep
 #include "nanobind/stl/vector.h"  // IWYU pragma: keep
+#include "xla/backends/cpu/collectives/cpu_collectives.h"
 #include "xla/pjrt/c/pjrt_c_api.h"
 #include "xla/pjrt/distributed/client.h"
 #include "xla/pjrt/distributed/distributed.h"
@@ -63,23 +64,22 @@ limitations under the License.
 #include "xla/python/pjrt_ifrt/pjrt_attribute_map_util.h"
 #include "xla/python/py_client.h"
 #include "xla/python/py_program.h"
-#include "xla/service/cpu/collectives_interface.h"
 #include "xla/tsl/concurrency/ref_count.h"
 #include "xla/tsl/python/lib/core/numpy.h"  // NOLINT
 
 #if defined(__linux__)
 #include "gloo/transport/tcp/attr.h"
 #include "gloo/transport/tcp/device.h"
-#include "xla/pjrt/cpu/gloo_collectives.h"
-#include "xla/pjrt/cpu/gloo_kv_store.h"
+#include "xla/backends/cpu/collectives/gloo_collectives.h"
+#include "xla/backends/cpu/collectives/gloo_kv_store.h"
 #elif defined(__APPLE__)
 #include "gloo/transport/uv/device.h"
-#include "xla/pjrt/cpu/gloo_collectives.h"  // NOLINT
-#include "xla/pjrt/cpu/gloo_kv_store.h"  // NOLINT
+#include "xla/backends/cpu/collectives/gloo_collectives.h"  // NOLINT
+#include "xla/backends/cpu/collectives/gloo_kv_store.h"  // NOLINT
 #endif  // defined(__linux__)
 
 #if !defined(_WIN32) && !defined(PLATFORM_GOOGLE)
-#include "xla/pjrt/cpu/mpi_collectives.h"
+#include "xla/backends/cpu/collectives/mpi_collectives.h"
 #endif  // !_WIN32 && !PLATFORM_GOOGLE
 
 #include "xla/pjrt/distributed/key_value_store_interface.h"
@@ -204,9 +204,11 @@ NB_MODULE(xla_extension, m) {
       .value("U32", U32)
       .value("U64", U64)
       .value("F16", F16)
+      .value("F4E2M1FN", F4E2M1FN)
       // TODO: Uncomment once the minimum ml_dtypes in JAX is >= 0.5.0.
       // .value("F8E3M4", F8E3M4)
       // .value("F8E4M3", F8E4M3)
+      .value("F8E8M0FNU", F8E8M0FNU)
       .value("F8E4M3FN", F8E4M3FN)
       .value("F8E4M3B11FNUZ", F8E4M3B11FNUZ)
       .value("F8E4M3FNUZ", F8E4M3FNUZ)
@@ -259,8 +261,7 @@ NB_MODULE(xla_extension, m) {
 
   jax::BuildWeakrefLRUCacheAPI(m);
 
-  nb::class_<xla::cpu::CollectivesInterface> cpu_collectives(m,
-                                                             "CpuCollectives");
+  nb::class_<xla::cpu::CpuCollectives> cpu_collectives(m, "CpuCollectives");
 
   m.def(
       "make_gloo_tcp_collectives",
@@ -268,7 +269,7 @@ NB_MODULE(xla_extension, m) {
 
          std::optional<std::string> hostname,
          std::optional<std::string> interface)
-          -> std::shared_ptr<xla::cpu::CollectivesInterface> {
+          -> std::shared_ptr<xla::cpu::CpuCollectives> {
 #if defined(__linux__)
         std::shared_ptr<KeyValueStoreInterface> kv_store = nullptr;
         if (distributed_client != nullptr) {
@@ -321,7 +322,7 @@ NB_MODULE(xla_extension, m) {
   });
 #else   // !_WIN32 && !PLATFORM_GOOGLE
   m.def("make_mpi_collectives",
-        []() -> std::shared_ptr<xla::cpu::CollectivesInterface> {
+        []() -> std::shared_ptr<xla::cpu::CpuCollectives> {
           throw xla::XlaRuntimeError(
               "make_mpi_collectives is not implemented for Windows");
         });
@@ -332,7 +333,7 @@ NB_MODULE(xla_extension, m) {
       [](bool asynchronous,
          std::shared_ptr<DistributedRuntimeClient> distributed_client,
          int node_id, int num_nodes,
-         std::shared_ptr<xla::cpu::CollectivesInterface> collectives,
+         std::shared_ptr<xla::cpu::CpuCollectives> collectives,
          std::optional<int> num_devices) -> nb_class_ptr<PyClient> {
         std::unique_ptr<ifrt::PjRtClient> ifrt_client;
         {
@@ -363,7 +364,7 @@ NB_MODULE(xla_extension, m) {
       nb::arg("asynchronous") = true, nb::arg("distributed_client") = nullptr,
       nb::arg("node_id") = 0, nb::arg("num_nodes") = 1,
       nb::arg("collectives").none() =
-          std::shared_ptr<xla::cpu::CollectivesInterface>(),
+          std::shared_ptr<xla::cpu::CpuCollectives>(),
       nb::arg("num_devices").none() = std::nullopt);
   m.def("pjrt_plugin_loaded", [](std::string platform_name) -> bool {
     absl::StatusOr<const PJRT_Api*> pjrt_api = pjrt::PjrtApi(platform_name);
@@ -658,9 +659,12 @@ NB_MODULE(xla_extension, m) {
           "blocking_key_value_get_bytes",
           [](DistributedRuntimeClient& client, std::string key,
              int64_t timeout_in_ms) -> nb::bytes {
-            nb::gil_scoped_release gil_release;
-            std::string result = xla::ValueOrThrow(client.BlockingKeyValueGet(
-                key, absl::Milliseconds(timeout_in_ms)));
+            std::string result;
+            {
+              nb::gil_scoped_release gil_release;
+              result = xla::ValueOrThrow(client.BlockingKeyValueGet(
+                  key, absl::Milliseconds(timeout_in_ms)));
+            }
             return nb::bytes(result.data(), result.size());
           },
           nb::arg("key"), nb::arg("timeout_in_ms"))
@@ -674,8 +678,11 @@ NB_MODULE(xla_extension, m) {
       .def(
           "key_value_try_get_bytes",
           [](DistributedRuntimeClient& client, std::string key) -> nb::bytes {
-            nb::gil_scoped_release gil_release;
-            std::string result = xla::ValueOrThrow(client.KeyValueTryGet(key));
+            std::string result;
+            {
+              nb::gil_scoped_release gil_release;
+              result = xla::ValueOrThrow(client.KeyValueTryGet(key));
+            }
             return nb::bytes(result.data(), result.size());
           },
           nb::arg("key"))
@@ -732,15 +739,18 @@ NB_MODULE(xla_extension, m) {
           "key_value_dir_get_bytes",
           [](DistributedRuntimeClient& client, absl::string_view key)
               -> std::vector<std::pair<std::string, nb::bytes>> {
-            nb::gil_scoped_release gil_release;
-            std::vector<std::pair<std::string, std::string>> result =
-                xla::ValueOrThrow(client.KeyValueDirGet(key));
+            std::vector<std::pair<std::string, std::string>> result;
+            {
+              nb::gil_scoped_release gil_release;
+              result = xla::ValueOrThrow(client.KeyValueDirGet(key));
+            }
             // Convert std::string values to nb::bytes.
             std::vector<std::pair<std::string, nb::bytes>> kvs;
             kvs.reserve(result.size());
-            for (const auto& kv : result) {
-              kvs.push_back(std::pair(
-                  kv.first, nb::bytes(kv.second.data(), kv.second.size())));
+            for (auto& kv : result) {
+              kvs.push_back(
+                  std::pair(std::move(kv.first),
+                            nb::bytes(kv.second.data(), kv.second.size())));
             }
             return kvs;
           },

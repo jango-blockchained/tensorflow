@@ -38,6 +38,7 @@ limitations under the License.
 #include "absl/types/span.h"
 #include "unsupported/Eigen/CXX11/Tensor"
 #include "mlir/IR/BuiltinOps.h"
+#include "xla/backends/cpu/collectives/cpu_collectives.h"
 #include "xla/executable_run_options.h"
 #include "xla/hlo/builder/xla_computation.h"
 #include "xla/hlo/ir/hlo_module.h"
@@ -57,7 +58,6 @@ limitations under the License.
 #include "xla/pjrt/transpose.h"
 #include "xla/service/buffer_assignment.h"
 #include "xla/service/computation_placer.h"
-#include "xla/service/cpu/collectives_interface.h"
 #include "xla/service/cpu/cpu_event.h"
 #include "xla/service/executable.h"
 #include "xla/service/hlo.pb.h"
@@ -77,8 +77,8 @@ class TfrtCpuClient final : public PjRtClient {
  public:
   TfrtCpuClient(
       int process_index, std::vector<std::unique_ptr<TfrtCpuDevice>> devices,
-      std::shared_ptr<cpu::CollectivesInterface> collectives,
-      size_t num_threads, bool asynchronous,
+      std::shared_ptr<cpu::CpuCollectives> collectives, size_t num_threads,
+      bool asynchronous,
       std::function<void(HloModuleConfig&)> customize_hlo_module_config);
   ~TfrtCpuClient() override;
 
@@ -288,7 +288,7 @@ class TfrtCpuClient final : public PjRtClient {
   absl::Mutex transpose_mu_;
   TransposePlanCache transpose_cache_ ABSL_GUARDED_BY(transpose_mu_);
 
-  std::shared_ptr<cpu::CollectivesInterface> collectives_;
+  std::shared_ptr<cpu::CpuCollectives> collectives_;
 
   xla::CpuTopologyDescription topology_;
 
@@ -323,6 +323,9 @@ class TfrtCpuBuffer final : public AbstractTfrtCpuBuffer {
   PjRtMemorySpace* memory_space() const override { return memory_space_; }
   TfrtCpuDevice* device() const override { return device_; }
   TfrtCpuClient* client() const override { return client_; }
+
+  PjRtFuture<> CopyRawToHost(void* dst, int64_t offset,
+                             int64_t transfer_size) override;
 
   using PjRtBuffer::ToLiteralSync;
   PjRtFuture<> ToLiteral(MutableLiteralBase* literal) override;

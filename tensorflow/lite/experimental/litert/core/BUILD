@@ -106,6 +106,17 @@ cc_library(
     ],
 )
 
+cc_library(
+    name = "dispatch_op_schema",
+    srcs = ["dispatch_op_schema.cc"],
+    hdrs = ["dispatch_op_schema.h"],
+    copts = ["-DFLATBUFFERS_LOCALE_INDEPENDENT=0"],
+    deps = [
+        "//tensorflow/lite/experimental/litert/cc:litert_buffer_ref",
+        "@flatbuffers//:runtime_cc",
+    ],
+)
+
 cc_test(
     name = "filesystem_test",
     srcs = ["filesystem_test.cc"],
@@ -131,10 +142,19 @@ cc_test(
 #         ":dynamic_loading",
 #         ":filesystem",
 #         "@com_google_googletest//:gtest_main",
-#         "//testing/base/public:unique-test-directory",
 #         "@com_google_absl//absl/strings:string_view",
 #         "//tensorflow/lite/experimental/litert/c:litert_logging",  # buildcleaner: keep
 #         "//tensorflow/lite/experimental/litert/test:common",
+#         "//tensorflow/lite/experimental/litert/test:test_macros",
 #     ],
 # )
 # copybara:uncomment_end
+
+cc_test(
+    name = "dispatch_op_schema_test",
+    srcs = ["dispatch_op_schema_test.cc"],
+    deps = [
+        ":dispatch_op_schema",
+        "@com_google_googletest//:gtest_main",
+    ],
+)

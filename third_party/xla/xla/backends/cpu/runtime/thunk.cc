@@ -22,12 +22,12 @@ limitations under the License.
 #include <string>
 #include <utility>
 
+#include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
 #include "xla/backends/cpu/collectives/cpu_collectives.h"
+#include "xla/backends/cpu/collectives/in_process_collectives.h"
 #include "xla/executable_run_options.h"
-#include "xla/service/cpu/collectives_interface.h"
 #include "xla/service/cpu/cpu_executable_run_options.h"
-#include "xla/service/cpu/in_process_collectives.h"
 #include "xla/service/global_device_id.h"
 #include "xla/stream_executor/stream.h"
 #include "xla/stream_executor/stream_executor.h"
@@ -84,8 +84,11 @@ absl::string_view Thunk::KindToString(Kind kind) {
       return "while";
     case Kind::kXnnFusion:
       return "xnn-fusion";
+    case Kind::kUnknown:
+      return "unknown";
   }
 }
+
 Thunk::Thunk(Kind kind, Info info)
     : kind_(kind),
       info_(std::move(info)),
@@ -103,15 +106,14 @@ Thunk::CollectiveExecuteParams::Create(
 
   // Default implementation of a collectives interface that can execute
   // collective operations within the same process.
-  static CollectivesInterface* in_process_collectives =
-      new runtime::InProcessCollectives();
+  static CpuCollectives* in_process_collectives = new InProcessCollectives();
 
   // If CPU executable run options are set, use the collectives interface
   // provided by the executable run options if it is set. Otherwise, use the
   // in-process collectives interface.
   const CpuExecutableRunOptions* cpu_run_options =
       run_options->cpu_executable_run_options();
-  CollectivesInterface* collectives =
+  CpuCollectives* collectives =
       cpu_run_options && cpu_run_options->collectives()
           ? cpu_run_options->collectives()
           : in_process_collectives;
