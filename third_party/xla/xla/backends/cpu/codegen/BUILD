@@ -216,6 +216,7 @@ cc_library(
     srcs = ["kernel_api_ir_builder.cc"],
     hdrs = ["kernel_api_ir_builder.h"],
     deps = [
+        ":symbol_name_util",
         "//xla:cpu_function_runtime",
         "//xla:shape_util",
         "//xla:util",
@@ -282,6 +283,34 @@ cc_library(
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/strings:str_format",
+    ],
+)
+
+xla_cc_test(
+    name = "aot_compiled_function_library_test",
+    srcs = ["aot_compiled_function_library_test.cc"],
+    deps = [
+        ":aot_compiled_function_library",
+        "//xla/backends/cpu/runtime:function_library",
+        "//xla/tsl/platform:statusor",
+        "@com_google_absl//absl/container:flat_hash_map",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+cc_library(
+    name = "aot_compiled_function_library",
+    srcs = ["aot_compiled_function_library.cc"],
+    hdrs = ["aot_compiled_function_library.h"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//xla/backends/cpu/runtime:function_library",
+        "@com_google_absl//absl/container:flat_hash_map",
+        "@com_google_absl//absl/log:check",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings:str_format",
+        "@com_google_absl//absl/strings:string_view",
     ],
 )
 
@@ -361,5 +390,28 @@ xla_cc_test(
         "@llvm-project//llvm:Support",
         "@llvm-project//llvm:Target",
         "@llvm-project//llvm:ir_headers",
+    ],
+)
+
+cc_library(
+    name = "symbol_name_util",
+    srcs = ["symbol_name_util.cc"],
+    hdrs = ["symbol_name_util.h"],
+    deps = [
+        "//xla:util",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+    ],
+)
+
+xla_cc_test(
+    name = "symbol_name_util_test",
+    srcs = ["symbol_name_util_test.cc"],
+    deps = [
+        ":symbol_name_util",
+        "//xla/tsl/platform:statusor",
+        "@com_google_googletest//:gtest_main",
+        "@local_tsl//tsl/platform:status_matchers",
+        "@local_tsl//tsl/platform:test",
     ],
 )
