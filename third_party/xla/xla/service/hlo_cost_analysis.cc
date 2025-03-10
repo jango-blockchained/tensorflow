@@ -103,12 +103,13 @@ absl::Status HloCostAnalysis::Postprocess(const HloInstruction* hlo) {
   auto [it_ignored, inserted] =
       hlo_properties_.emplace(hlo, std::move(current_properties_));
   current_properties_ = Properties();
-  TF_RET_CHECK(inserted);
+  TF_RET_CHECK(inserted) << hlo->name() << " already exists in hlo_properties_";
 
   return absl::OkStatus();
 }
 
-absl::Status HloCostAnalysis::RemoveInstruction(HloInstruction* instruction) {
+absl::Status HloCostAnalysis::RemoveInstruction(
+    const HloInstruction* instruction) {
   // Subtract the previously calculated properties of the instruction
   // from HLO graph's total properties_sum_ if instruction was analyzed before.
   auto it = hlo_properties_.find(instruction);
@@ -121,7 +122,8 @@ absl::Status HloCostAnalysis::RemoveInstruction(HloInstruction* instruction) {
   return absl::OkStatus();
 }
 
-absl::Status HloCostAnalysis::RevisitInstruction(HloInstruction* instruction) {
+absl::Status HloCostAnalysis::RevisitInstruction(
+    const HloInstruction* instruction) {
   TF_RETURN_IF_ERROR(RemoveInstruction(instruction));
   // Now do Preprocess() -> Visit() -> Postprocess() for the instruction same
   // way it is done during the complete analysis.
