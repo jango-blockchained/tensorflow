@@ -640,26 +640,38 @@ PjRtLoadedExecutable::Execute(absl::Span<tsl::RCReference<Array>> args,
   // memory_kind shares the same Sharding object.
   absl::flat_hash_map<MemoryKind, std::shared_ptr<const Sharding>>
       single_device_shardings;
-  auto maybe_layouts = GetOutputLayouts();
+
+  // TODO(emilyaf): Simplify the handling of layouts here when they're plumbed
+  // through from JAX.
   std::vector<std::shared_ptr<const xla::PjRtLayout>> layouts;
-  if (absl::IsUnimplemented(maybe_layouts.status())) {
-    layouts.reserve(num_outputs);
+  layouts.reserve(num_outputs);
+  if (!pjrt_outputs.empty()) {
     for (int i = 0; i < num_outputs; ++i) {
-      std::shared_ptr<const xla::PjRtLayout> layout;
-      if (output_dtypes_[i].kind() == xla::ifrt::DType::kToken) {
-        layout = std::make_shared<xla::PjRtLayout>(xla::Layout());
-      } else {
-        TF_ASSIGN_OR_RETURN(layout,
-                            client_->GetDefaultLayout(
-                                output_dtypes_[i], output_shapes_[i].dims(),
-                                devices_->devices().front(),
-                                output_shardings_[i]->memory_kind()));
-      }
+      auto layout = output_dtypes_[i].kind() == xla::ifrt::DType::kToken
+                        ? std::make_shared<xla::PjRtLayout>(xla::Layout())
+                        : pjrt_outputs.front()[i]->layout();
       layouts.push_back(std::move(layout));
     }
   } else {
-    TF_RETURN_IF_ERROR(maybe_layouts.status());
-    layouts = *std::move(maybe_layouts);
+    auto maybe_layouts = GetOutputLayouts();
+    if (absl::IsUnimplemented(maybe_layouts.status())) {
+      for (int i = 0; i < num_outputs; ++i) {
+        std::shared_ptr<const xla::PjRtLayout> layout;
+        if (output_dtypes_[i].kind() == xla::ifrt::DType::kToken) {
+          layout = std::make_shared<xla::PjRtLayout>(xla::Layout());
+        } else {
+          TF_ASSIGN_OR_RETURN(layout,
+                              client_->GetDefaultLayout(
+                                  output_dtypes_[i], output_shapes_[i].dims(),
+                                  devices_->devices().front(),
+                                  output_shardings_[i]->memory_kind()));
+        }
+        layouts.push_back(std::move(layout));
+      }
+    } else {
+      TF_RETURN_IF_ERROR(maybe_layouts.status());
+      layouts = *std::move(maybe_layouts);
+    }
   }
 
   for (int i = 0; i < num_outputs; ++i) {

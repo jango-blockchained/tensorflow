@@ -91,6 +91,7 @@ cc_library(
     deps = [
         ":event_pool",
         ":pjrt_client",
+        ":pjrt_common",
         "//xla:shape_tree",
         "//xla:shape_util",
         "//xla/service:executable",
@@ -160,6 +161,7 @@ cc_library(
         "//xla/stream_executor:stream_executor_h",
         "//xla/tsl/protobuf:error_codes_proto_impl_cc",
         "//xla/tsl/util:env_var",
+        "@com_google_absl//absl/functional:any_invocable",
         "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings:str_format",
@@ -1086,6 +1088,7 @@ cc_library(
             "@llvm-project//mlir:SCFToControlFlow",
             "@llvm-project//mlir:ToLLVMIRTranslation",
             "@llvm-project//mlir:Transforms",
+            "//xla/backends/gpu/codegen/triton:compilation_pipeline",
             "//xla/tsl/platform:errors",
             "//xla/tsl/platform:statusor",
             "@triton//:TritonDialects",
