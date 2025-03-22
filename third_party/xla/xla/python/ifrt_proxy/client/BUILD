@@ -13,11 +13,11 @@
 # limitations under the License.
 
 load("//xla/python/ifrt_proxy/common:ifrt_proxy.bzl", "default_ifrt_proxy_visibility", "ifrt_proxy_cc_test")
-load("//xla/tsl:tsl.bzl", "if_google")
+load("//xla/tsl:tsl.bzl", "if_google", "internal_visibility")
 
 package(
     # copybara:uncomment default_applicable_licenses = ["//tensorflow:license"],
-    default_visibility = default_ifrt_proxy_visibility,
+    default_visibility = internal_visibility(default_ifrt_proxy_visibility),
 )
 
 cc_library(
@@ -162,6 +162,7 @@ cc_library(
         "//xla/python/ifrt",
         "//xla/python/ifrt:attribute_map",
         "//xla/python/ifrt:basic_device_list",
+        "//xla/python/ifrt:user_context",
         "//xla/python/ifrt_proxy/common:common_serdes",
         "//xla/python/ifrt_proxy/common:ifrt_service_proto_cc",
         "//xla/python/ifrt_proxy/common:types",
@@ -169,6 +170,7 @@ cc_library(
         "//xla/python/pjrt_ifrt:pjrt_attribute_map_util",
         "//xla/tsl/concurrency:ref_count",
         "//xla/tsl/platform:statusor",
+        "@com_google_absl//absl/base:nullability",
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/container:flat_hash_set",
         "@com_google_absl//absl/container:inlined_vector",
@@ -237,6 +239,7 @@ cc_library(
         ":global_flags",
         ":rpc_helper",
         "//xla:status_macros",
+        "//xla/pjrt:pjrt_layout",
         "//xla/python/ifrt",
         "//xla/python/ifrt:client_impl_util",
         "//xla/python/ifrt:sharding_serdes",
@@ -258,6 +261,7 @@ cc_library(
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/strings:cord",
         "@com_google_absl//absl/strings:str_format",
+        "@com_google_absl//absl/synchronization",
         "@com_google_absl//absl/types:span",
         "@llvm-project//llvm:Support",
         "@local_tsl//tsl/profiler/lib:traceme",
@@ -400,6 +404,7 @@ cc_library(
         "@com_google_absl//absl/base:nullability",
         "@com_google_absl//absl/cleanup",
         "@com_google_absl//absl/container:flat_hash_map",
+        "@com_google_absl//absl/container:flat_hash_set",
         "@com_google_absl//absl/container:node_hash_set",
         "@com_google_absl//absl/log",
         "@com_google_absl//absl/log:check",
@@ -583,7 +588,6 @@ cc_library(
         "-fno-strict-aliasing",
     ],
     features = ["-use_header_modules"],
-    visibility = ["//xla/python:__pkg__"],
     deps = [
         ":grpc_client",
         ":registry",

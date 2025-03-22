@@ -59,7 +59,10 @@ Shape::Shape(const PrimitiveType element_type,
                           dynamic_dimensions.end()) {
   CHECK(primitive_util::IsArrayType(element_type_))
       << "Invalid element type for array shape: " << element_type_;
-  if (!dynamic_dimensions.empty()) {
+  if (dynamic_dimensions_.empty()) {
+    // Assume all dimensions are static.
+    dynamic_dimensions_.resize(dimensions_.size(), false);
+  } else {
     CHECK_EQ(dimensions_.size(), dynamic_dimensions_.size())
         << "If dynamic_dimensions is provided, it must have the same size as "
            "dimensions.";
@@ -112,7 +115,7 @@ Shape::Shape(const ShapeProto& shape_proto) {
 void Shape::SetProto(ShapeProto& proto) const {
   proto.Clear();
   proto.set_element_type(element_type_);
-  proto.mutable_dimensions()->Reserve(rank());
+  proto.mutable_dimensions()->Reserve(dimensions_size());
   for (const int64_t dimension : dimensions()) {
     proto.add_dimensions(dimension);
   }
@@ -252,7 +255,7 @@ bool Shape::Equal::operator()(const Shape& lhs, const Shape& rhs) {
       VLOG(3) << "CompareShapes: lhs rank != rhs rank";
       return false;
     }
-    for (int i = 0; i < lhs.rank(); ++i) {
+    for (int i = 0; i < lhs.dimensions_size(); ++i) {
       if (ignore_dynamic_dimension_ &&
           (lhs.is_unbounded_dynamic_dimension(i) ||
            rhs.is_unbounded_dynamic_dimension(i))) {
@@ -302,7 +305,7 @@ bool Shape::Equal::operator()(const Shape& lhs, const Shape& rhs) {
   }
 
   if (!ignore_dynamic_dimension_) {
-    for (int i = 0; i < lhs.rank(); ++i) {
+    for (int i = 0; i < lhs.dimensions_size(); ++i) {
       if (lhs.is_dynamic_dimension(i) != rhs.is_dynamic_dimension(i)) {
         VLOG(3)
             << "CompareShapes: lhs and rhs have different dynamic dimensions.";

@@ -21,6 +21,8 @@
 #include <string>
 #include <utility>
 
+#include "absl/status/status.h"
+#include "absl/status/statusor.h"
 #include "tensorflow/lite/experimental/litert/c/litert_common.h"  // IWYU pragma: keep
 #include "tensorflow/lite/experimental/litert/c/litert_logging.h"  // IWYU pragma: keep
 #include "tensorflow/lite/experimental/litert/cc/litert_expected.h"  // IWYU pragma: keep
@@ -135,7 +137,7 @@ class SourceLocation {
   }
 
   constexpr const char* file_name() const { return file_; }
-  constexpr uint32_t line() const { return line_; };
+  constexpr uint32_t line() const { return line_; }
 
  private:
   // Builds a SourceLocation object.
@@ -218,6 +220,13 @@ class ErrorStatusBuilder {
   template <class T>
   operator litert::Expected<T>() const noexcept {
     return litert::Unexpected(error_.Status(), LogMessage());
+  }
+
+  operator absl::Status() const noexcept;
+
+  template <class T>
+  operator absl::StatusOr<T>() const noexcept {
+    return static_cast<absl::Status>(*this);
   }
   // NOLINTEND(*-explicit-constructor)
 

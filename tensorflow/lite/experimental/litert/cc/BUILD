@@ -118,6 +118,7 @@ cc_library(
         ":litert_handle",
         ":litert_layout",
         "//tensorflow/lite/experimental/litert/c:litert_common",
+        "//tensorflow/lite/experimental/litert/c:litert_logging",
         "//tensorflow/lite/experimental/litert/c:litert_model",
         "@com_google_absl//absl/container:inlined_vector",
         "@com_google_absl//absl/strings:string_view",
@@ -255,11 +256,14 @@ cc_library(
 
 cc_library(
     name = "litert_macros",
+    srcs = ["litert_macros.cc"],
     hdrs = ["litert_macros.h"],
     deps = [
         ":litert_expected",
         "//tensorflow/lite/experimental/litert/c:litert_common",
         "//tensorflow/lite/experimental/litert/c:litert_logging",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
     ],
 )
 
@@ -534,6 +538,7 @@ cc_test(
 #     deps = [
 #         ":litert_compiled_model",
 #         ":litert_environment",
+#         ":litert_event",
 #         ":litert_model",
 #         ":litert_tensor_buffer",
 #         "@com_google_googletest//:gtest_main",
@@ -546,8 +551,11 @@ cc_test(
 #         "//tensorflow/lite/c:c_api_opaque",
 #         "//tensorflow/lite/c:common",
 #         "//tensorflow/lite/experimental/litert/c:litert_common",
-#         "//tensorflow/lite/experimental/litert/c:litert_tensor_buffer",
+#         "//tensorflow/lite/experimental/litert/c:litert_event",
+#         "//tensorflow/lite/experimental/litert/c:litert_event_type",
+#         "//tensorflow/lite/experimental/litert/c:litert_tensor_buffer_types",
 #         "//tensorflow/lite/experimental/litert/test:common",
+#         "//tensorflow/lite/experimental/litert/test:matchers",
 #         "//tensorflow/lite/experimental/litert/test:simple_model",
 #         "//tensorflow/lite/kernels:builtin_ops",
 #     ],
@@ -569,6 +577,7 @@ cc_test(
 #     deps = [
 #         ":litert_compiled_model",
 #         ":litert_environment",
+#         ":litert_event",
 #         ":litert_model",
 #         ":litert_tensor_buffer",
 #         "@com_google_googletest//:gtest_main",
@@ -582,6 +591,7 @@ cc_test(
 #         "//tensorflow/lite/c:common",
 #         "//tensorflow/lite/experimental/litert/c:litert_runtime_c_api_shared_lib",
 #         "//tensorflow/lite/experimental/litert/test:common",
+#         "//tensorflow/lite/experimental/litert/test:matchers",
 #         "//tensorflow/lite/experimental/litert/test:simple_model",
 #         "//tensorflow/lite/kernels:builtin_ops",
 #     ],
